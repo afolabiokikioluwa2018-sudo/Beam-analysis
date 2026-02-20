@@ -3,6 +3,7 @@ Plotting functions for structure visualization and diagrams
 """
 
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
 
@@ -134,106 +135,150 @@ def plot_structure(nodes_df, members_df, supports_df, loads_df):
     return fig
 
 
-def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
+def calculate_shear_values(member_id, members_df, nodes_df, member_forces_df, loads_df, n_points=100):
     """
-    Plot Shear Force Diagram for all members
+    Calculate detailed shear force values along a member
+    Returns: x_positions, shear_values, critical_points
     """
-    fig = go.Figure()
+    member = members_df[members_df['Member'] == member_id].iloc[0]
+    node_i = int(member['Node_I'])
+    node_j = int(member['Node_J'])
     
-    for idx, member in members_df.iterrows():
-        member_id = int(member['Member'])
-        node_i = int(member['Node_I'])
-        node_j = int(member['Node_J'])
-        
-        xi = nodes_df[nodes_df['Node'] == node_i]['X'].values[0]
-        yi = nodes_df[nodes_df['Node'] == node_i]['Y'].values[0]
-        xj = nodes_df[nodes_df['Node'] == node_j]['X'].values[0]
-        yj = nodes_df[nodes_df['Node'] == node_j]['Y'].values[0]
-        
-        L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
-        
-        # Get member forces
-        forces = member_forces_df[member_forces_df['Member'] == member_id].iloc[0]
-        V_i = forces['V_i']
-        V_j = -forces['V_j']  # Sign convention
-        
-        # Get loads on this member
-        member_loads = loads_df[loads_df['Member'] == member_id]
-        
-        # Generate shear force values along member
-        n_points = 100
-        x_local = np.linspace(0, L, n_points)
-        V = np.zeros(n_points)
-        
-        # Start with end shear
-        V[:] = V_i
+    xi = nodes_df[nodes_df['Node'] == node_i]['X'].values[0]
+    yi = nodes_df[nodes_df['Node'] == node_i]['Y'].values[0]
+    xj = nodes_df[nodes_df['Node'] == node_j]['X'].values[0]
+    yj = nodes_df[nodes_df['Node'] == node_j]['Y'].values[0]
+    
+    L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
+    
+    # Get member forces
+    forces = member_forces_df[member_forces_df['Member'] == member_id].iloc[0]
+    V_i = forces['V_i']
+    
+    # Get loads on this member
+    member_loads = loads_df[loads_df['Member'] == member_id]
+    
+    # Generate positions along member
+    x_local = np.linspace(0, L, n_points)
+    V = np.zeros(n_points)
+    
+    # Critical points for exact values
+    critical_points = [(0, V_i)]  # Start point
+    
+    # Calculate shear at each point
+    for i, x in enumerate(x_local):
+        V[i] = V_i
         
         # Apply loads
         for _, load in member_loads.iterrows():
             if load['Type'] == 'UDL':
                 w = load['W1']
-                for i, x in enumerate(x_local):
-                    V[i] -= w * x
-                    
+                V[i] -= w * x
+                
             elif load['Type'] == 'VDL':
                 w1 = load['W1']
                 w2 = load['W2']
-                for i, x in enumerate(x_local):
-                    # Linear variation of load
-                    w_x = w1 + (w2 - w1) * x / L
-                    V[i] -= w_x * x
-                    
+                # Trapezoidal load effect on shear
+                w_avg = w1 + (w2 - w1) * x / L
+                V[i] -= w_avg * x / 2
+                
             elif load['Type'] == 'Point Load':
                 P = load['P']
                 a = load['a']
-                for i, x in enumerate(x_local):
-                    if x >= a:
-                        V[i] -= P
-        
-        # Transform to global coordinates for plotting
-        if abs(xj - xi) > abs(yj - yi):  # Horizontal-ish member
-            x_plot = xi + x_local * (xj - xi) / L
-            y_plot = np.full_like(x_local, (yi + yj) / 2)
-        else:  # Vertical-ish member
-            x_plot = np.full_like(x_local, (xi + xj) / 2)
-            y_plot = yi + x_local * (yj - yi) / L
-        
-        fig.add_trace(go.Scatter(
-            x=x_plot,
-            y=V,
-            mode='lines',
-            line=dict(width=2),
-            name=f'Member {member_id}',
-            hovertemplate='Position: %{x:.2f}m<br>Shear: %{y:.2f} kN'
-        ))
-        
-        # Add zero line
-        fig.add_trace(go.Scatter(
-            x=x_plot,
-            y=np.zeros_like(x_plot),
-            mode='lines',
-            line=dict(color='black', width=1, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
+                if x >= a:
+                    V[i] -= P
+                    if abs(x - a) < L/n_points:  # Near point load
+                        critical_points.append((a, V_i - P))
     
-    fig.update_layout(
-        title='Shear Force Diagram',
-        xaxis_title='Position along Structure (m)',
-        yaxis_title='Shear Force (kN)',
-        hovermode='closest',
-        height=400
+    # Add end point
+    critical_points.append((L, V[-1]))
+    
+    return x_local, V, critical_points
+
+
+def calculate_moment_values(member_id, members_df, nodes_df, member_forces_df, loads_df, n_points=100):
+    """
+    Calculate detailed bending moment values along a member
+    Returns: x_positions, moment_values, critical_points
+    """
+    member = members_df[members_df['Member'] == member_id].iloc[0]
+    node_i = int(member['Node_I'])
+    node_j = int(member['Node_J'])
+    
+    xi = nodes_df[nodes_df['Node'] == node_i]['X'].values[0]
+    yi = nodes_df[nodes_df['Node'] == node_i]['Y'].values[0]
+    xj = nodes_df[nodes_df['Node'] == node_j]['X'].values[0]
+    yj = nodes_df[nodes_df['Node'] == node_j]['Y'].values[0]
+    
+    L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
+    
+    # Get member forces
+    forces = member_forces_df[member_forces_df['Member'] == member_id].iloc[0]
+    M_i = forces['M_i']
+    V_i = forces['V_i']
+    
+    # Get loads on this member
+    member_loads = loads_df[loads_df['Member'] == member_id]
+    
+    # Generate positions
+    x_local = np.linspace(0, L, n_points)
+    M = np.zeros(n_points)
+    
+    # Critical points
+    critical_points = [(0, M_i)]
+    
+    # Calculate moment at each point
+    for i, x in enumerate(x_local):
+        M[i] = M_i + V_i * x
+        
+        # Apply load effects
+        for _, load in member_loads.iterrows():
+            if load['Type'] == 'UDL':
+                w = load['W1']
+                M[i] -= w * x**2 / 2
+                
+            elif load['Type'] == 'VDL':
+                w1 = load['W1']
+                w2 = load['W2']
+                # Trapezoidal load moment effect
+                M[i] -= (w1 * x**2 / 2) + ((w2 - w1) * x**3) / (6 * L)
+                
+            elif load['Type'] == 'Point Load':
+                P = load['P']
+                a = load['a']
+                if x >= a:
+                    M[i] -= P * (x - a)
+                if abs(x - a) < L/n_points:
+                    critical_points.append((a, M[i]))
+                    
+            elif load['Type'] == 'Moment':
+                M_load = load['M']
+                a = load['a']
+                if x >= a:
+                    M[i] += M_load
+    
+    # Find maximum moment
+    max_idx = np.argmax(np.abs(M))
+    if max_idx > 0 and max_idx < len(M) - 1:
+        critical_points.append((x_local[max_idx], M[max_idx]))
+    
+    # Add end point
+    critical_points.append((L, M[-1]))
+    
+    return x_local, M, critical_points
+
+
+def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
+    """
+    Plot Shear Force Diagram with detailed values
+    """
+    fig = make_subplots(
+        rows=len(members_df), cols=1,
+        subplot_titles=[f'Member {int(m["Member"])}' for _, m in members_df.iterrows()],
+        vertical_spacing=0.1
     )
     
-    return fig
-
-
-def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
-    """
-    Plot Bending Moment Diagram for all members
-    Sign convention: Sagging positive
-    """
-    fig = go.Figure()
+    all_shear_data = []
     
     for idx, member in members_df.iterrows():
         member_id = int(member['Member'])
@@ -241,96 +286,179 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
         node_j = int(member['Node_J'])
         
         xi = nodes_df[nodes_df['Node'] == node_i]['X'].values[0]
-        yi = nodes_df[nodes_df['Node'] == node_i]['Y'].values[0]
         xj = nodes_df[nodes_df['Node'] == node_j]['X'].values[0]
-        yj = nodes_df[nodes_df['Node'] == node_j]['Y'].values[0]
         
-        L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
+        L = abs(xj - xi)
         
-        # Get member forces
-        forces = member_forces_df[member_forces_df['Member'] == member_id].iloc[0]
-        M_i = forces['M_i']
-        M_j = forces['M_j']
-        V_i = forces['V_i']
+        # Calculate detailed shear values
+        x_local, V, critical_pts = calculate_shear_values(
+            member_id, members_df, nodes_df, member_forces_df, loads_df
+        )
         
-        # Get loads on this member
-        member_loads = loads_df[loads_df['Member'] == member_id]
+        # Store data for table
+        for pos, val in critical_pts:
+            all_shear_data.append({
+                'Member': member_id,
+                'Position (m)': f'{pos:.3f}',
+                'Shear Force (kN)': f'{val:.3f}'
+            })
         
-        # Generate moment values along member
-        n_points = 100
-        x_local = np.linspace(0, L, n_points)
-        M = np.zeros(n_points)
+        # Global x-coordinates for plotting
+        x_global = xi + x_local
         
-        # Basic moment from end forces
-        for i, x in enumerate(x_local):
-            M[i] = M_i + V_i * x
-        
-        # Apply load effects
-        for _, load in member_loads.iterrows():
-            if load['Type'] == 'UDL':
-                w = load['W1']
-                for i, x in enumerate(x_local):
-                    M[i] -= w * x**2 / 2
-                    
-            elif load['Type'] == 'VDL':
-                w1 = load['W1']
-                w2 = load['W2']
-                for i, x in enumerate(x_local):
-                    # Trapezoidal load effect
-                    w_avg = w1 + (w2 - w1) * x / (2 * L)
-                    M[i] -= w_avg * x**2 / 2
-                    
-            elif load['Type'] == 'Point Load':
-                P = load['P']
-                a = load['a']
-                for i, x in enumerate(x_local):
-                    if x >= a:
-                        M[i] -= P * (x - a)
-                        
-            elif load['Type'] == 'Moment':
-                M_load = load['M']
-                a = load['a']
-                for i, x in enumerate(x_local):
-                    if x >= a:
-                        M[i] += M_load
-        
-        # Transform to global coordinates
-        if abs(xj - xi) > abs(yj - yi):
-            x_plot = xi + x_local * (xj - xi) / L
-            y_plot = np.full_like(x_local, (yi + yj) / 2)
-        else:
-            x_plot = np.full_like(x_local, (xi + xj) / 2)
-            y_plot = yi + x_local * (yj - yi) / L
-        
-        fig.add_trace(go.Scatter(
-            x=x_plot,
-            y=M,
-            mode='lines',
-            fill='tozeroy',
-            line=dict(width=2),
-            name=f'Member {member_id}',
-            hovertemplate='Position: %{x:.2f}m<br>Moment: %{y:.2f} kNm'
-        ))
+        # Plot shear force
+        fig.add_trace(
+            go.Scatter(
+                x=x_global,
+                y=V,
+                mode='lines',
+                line=dict(width=3, color='blue'),
+                fill='tozeroy',
+                fillcolor='rgba(0, 100, 255, 0.2)',
+                name=f'M{member_id}',
+                hovertemplate='Position: %{x:.2f}m<br>Shear: %{y:.2f} kN<extra></extra>'
+            ),
+            row=idx+1, col=1
+        )
         
         # Add zero line
-        fig.add_trace(go.Scatter(
-            x=x_plot,
-            y=np.zeros_like(x_plot),
-            mode='lines',
-            line=dict(color='black', width=1, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=[xi, xj],
+                y=[0, 0],
+                mode='lines',
+                line=dict(color='black', width=1, dash='dash'),
+                showlegend=False,
+                hoverinfo='skip'
+            ),
+            row=idx+1, col=1
+        )
+        
+        # Add critical point annotations
+        for pos, val in critical_pts:
+            if abs(val) > 0.01:  # Only annotate significant values
+                fig.add_annotation(
+                    x=xi + pos,
+                    y=val,
+                    text=f'{val:.2f}',
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowwidth=1,
+                    arrowcolor='red',
+                    ax=0,
+                    ay=-40 if val > 0 else 40,
+                    font=dict(size=10, color='red'),
+                    row=idx+1, col=1
+                )
+        
+        # Update axes
+        fig.update_xaxes(title_text='Position (m)', row=idx+1, col=1)
+        fig.update_yaxes(title_text='Shear (kN)', row=idx+1, col=1)
     
     fig.update_layout(
-        title='Bending Moment Diagram (Sagging Positive)',
-        xaxis_title='Position along Structure (m)',
-        yaxis_title='Bending Moment (kNm)',
-        hovermode='closest',
-        height=400
+        title_text='Shear Force Diagram (SFD)',
+        height=300 * len(members_df),
+        showlegend=True
     )
     
-    return fig
+    return fig, pd.DataFrame(all_shear_data)
+
+
+def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
+    """
+    Plot Bending Moment Diagram with detailed values
+    Sign convention: Sagging positive
+    """
+    fig = make_subplots(
+        rows=len(members_df), cols=1,
+        subplot_titles=[f'Member {int(m["Member"])}' for _, m in members_df.iterrows()],
+        vertical_spacing=0.1
+    )
+    
+    all_moment_data = []
+    
+    for idx, member in members_df.iterrows():
+        member_id = int(member['Member'])
+        node_i = int(member['Node_I'])
+        node_j = int(member['Node_J'])
+        
+        xi = nodes_df[nodes_df['Node'] == node_i]['X'].values[0]
+        xj = nodes_df[nodes_df['Node'] == node_j]['X'].values[0]
+        
+        # Calculate detailed moment values
+        x_local, M, critical_pts = calculate_moment_values(
+            member_id, members_df, nodes_df, member_forces_df, loads_df
+        )
+        
+        # Store data for table
+        for pos, val in critical_pts:
+            all_moment_data.append({
+                'Member': member_id,
+                'Position (m)': f'{pos:.3f}',
+                'Moment (kNm)': f'{val:.3f}'
+            })
+        
+        # Global x-coordinates
+        x_global = xi + x_local
+        
+        # Plot moment
+        fig.add_trace(
+            go.Scatter(
+                x=x_global,
+                y=M,
+                mode='lines',
+                line=dict(width=3, color='green'),
+                fill='tozeroy',
+                fillcolor='rgba(0, 200, 100, 0.2)',
+                name=f'M{member_id}',
+                hovertemplate='Position: %{x:.2f}m<br>Moment: %{y:.2f} kNm<extra></extra>'
+            ),
+            row=idx+1, col=1
+        )
+        
+        # Add zero line
+        fig.add_trace(
+            go.Scatter(
+                x=[xi, xj],
+                y=[0, 0],
+                mode='lines',
+                line=dict(color='black', width=1, dash='dash'),
+                showlegend=False,
+                hoverinfo='skip'
+            ),
+            row=idx+1, col=1
+        )
+        
+        # Add critical point annotations
+        for pos, val in critical_pts:
+            if abs(val) > 0.01:
+                fig.add_annotation(
+                    x=xi + pos,
+                    y=val,
+                    text=f'{val:.2f}',
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowwidth=1,
+                    arrowcolor='darkgreen',
+                    ax=0,
+                    ay=-40 if val > 0 else 40,
+                    font=dict(size=10, color='darkgreen'),
+                    row=idx+1, col=1
+                )
+        
+        # Update axes
+        fig.update_xaxes(title_text='Position (m)', row=idx+1, col=1)
+        fig.update_yaxes(title_text='Moment (kNm)', row=idx+1, col=1)
+    
+    fig.update_layout(
+        title_text='Bending Moment Diagram (BMD) - Sagging Positive',
+        height=300 * len(members_df),
+        showlegend=True
+    )
+    
+    return fig, pd.DataFrame(all_moment_data)
 
 
 def plot_deflection(members_df, nodes_df, displacements):
