@@ -63,7 +63,7 @@ if 'solved' not in st.session_state:
 
 # Header
 st.markdown('<div class="main-header">🏗️ Beam & Frame Analysis System</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">CEG 410 Group 8  - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">CEG 410 - Structural Analysis using Direct Stiffness Method & Slope Deflection</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -73,20 +73,10 @@ with st.sidebar:
     st.subheader("Quick Start Examples")
     example_choice = st.selectbox(
         "Load Example:",
-        ["None", "Simply Supported Beam", "Continuous Beam - Multi Span", 
-         "Portal Frame", "Multi-Storey Frame", "Frame with Settlement"],
+        ["None", "Simply Supported Beam", "Continuous Beam (3 Spans)", 
+         "Portal Frame", "Frame with Settlement"],
         key="example_selector"
     )
-    
-    # Info about capabilities
-    st.info("""
-    **📐 Capabilities:**
-    - ✅ Unlimited spans (beams)
-    - ✅ Multi-storey frames (2D)
-    - ✅ Any support combination
-    - ✅ Multiple loads per member
-    - ✅ Support settlements
-    """)
     
     if st.button("Load Example"):
         if example_choice != "None":
@@ -419,90 +409,6 @@ with tab3:
         st.subheader("🔩 Member End Forces")
         st.dataframe(st.session_state.member_forces, use_container_width=True)
         
-        st.divider()
-        
-        st.subheader("📊 Shear Force & Bending Moment at Span Ends")
-        st.write("Values at 0% (start) and 100% (end) of each span")
-        
-        # Calculate SF and BM at span ends
-        span_forces = []
-        
-        for idx, member in st.session_state.members.iterrows():
-            member_id = int(member['Member'])
-            node_i = int(member['Node_I'])
-            node_j = int(member['Node_J'])
-            
-            # Get node coordinates
-            xi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['X'].values[0]
-            yi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['Y'].values[0]
-            xj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['X'].values[0]
-            yj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['Y'].values[0]
-            L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
-            
-            # Get member forces
-            forces = st.session_state.member_forces[st.session_state.member_forces['Member'] == member_id].iloc[0]
-            V_i = forces['V_i']
-            M_i = forces['M_i']
-            V_j = -forces['V_j']
-            M_j = forces['M_j']
-            
-            # Calculate SF and BM at 0% (start of span)
-            SF_start = V_i
-            BM_start = M_i
-            
-            # Calculate SF and BM at 100% (end of span)
-            # Get loads on this member
-            member_loads = st.session_state.loads[st.session_state.loads['Member'] == member_id]
-            
-            # Calculate shear and moment at end considering all loads
-            SF_end = V_i
-            BM_end = M_i + V_i * L
-            
-            for _, load in member_loads.iterrows():
-                if load['Type'] == 'UDL':
-                    w = load['W1']
-                    SF_end -= w * L
-                    BM_end -= w * L**2 / 2
-                    
-                elif load['Type'] == 'VDL':
-                    w1 = load['W1']
-                    w2 = load['W2']
-                    SF_end -= (w1 + w2) * L / 2
-                    BM_end -= (w1 + w2) * L**2 / 6
-                    
-                elif load['Type'] == 'Point Load':
-                    P = load['P']
-                    a = load['a']
-                    SF_end -= P
-                    BM_end -= P * (L - a)
-                    
-                elif load['Type'] == 'Moment':
-                    M = load['M']
-                    BM_end += M
-            
-            span_forces.append({
-                'Span': f'Member {member_id}',
-                'From Node': node_i,
-                'To Node': node_j,
-                'Length (m)': f'{L:.3f}',
-                'SF @ 0% (kN)': f'{SF_start:.3f}',
-                'BM @ 0% (kNm)': f'{BM_start:.3f}',
-                'SF @ 100% (kN)': f'{SF_end:.3f}',
-                'BM @ 100% (kNm)': f'{BM_end:.3f}'
-            })
-        
-        span_forces_df = pd.DataFrame(span_forces)
-        st.dataframe(span_forces_df, use_container_width=True, hide_index=True)
-        
-        # Add explanation
-        st.info("""
-        📌 **Note:** 
-        - **0%** = Start of span (at Node I)
-        - **100%** = End of span (at Node J)
-        - **Positive SF** = Upward on left face
-        - **Positive BM** = Sagging (tension at bottom)
-        """)
-        
     else:
         st.info("👈 Run analysis first to see results!")
 
@@ -511,27 +417,51 @@ with tab4:
     
     if st.session_state.solved:
         try:
-            st.subheader("Shear Force Diagram")
-            sfd_fig = plot_sfd(st.session_state.members, st.session_state.nodes,
-                              st.session_state.member_forces, st.session_state.loads)
+            # Shear Force Diagram
+            st.subheader("📊 Shear Force Diagram (SFD)")
+            sfd_fig, sfd_data = plot_sfd(st.session_state.members, st.session_state.nodes,
+                                         st.session_state.member_forces, st.session_state.loads)
             st.plotly_chart(sfd_fig, use_container_width=True)
             
+            # Display detailed shear values
+            with st.expander("📋 View Detailed Shear Force Values", expanded=False):
+                st.dataframe(sfd_data, use_container_width=True, hide_index=True)
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Max Shear +", f"{sfd_data['Shear Force (kN)'].astype(float).max():.2f} kN")
+                col2.metric("Max Shear -", f"{sfd_data['Shear Force (kN)'].astype(float).min():.2f} kN")
+                col3.metric("Total Points", len(sfd_data))
+            
             st.divider()
             
-            st.subheader("Bending Moment Diagram")
-            bmd_fig = plot_bmd(st.session_state.members, st.session_state.nodes,
-                              st.session_state.member_forces, st.session_state.loads)
+            # Bending Moment Diagram
+            st.subheader("📊 Bending Moment Diagram (BMD)")
+            bmd_fig, bmd_data = plot_bmd(st.session_state.members, st.session_state.nodes,
+                                         st.session_state.member_forces, st.session_state.loads)
             st.plotly_chart(bmd_fig, use_container_width=True)
             
+            # Display detailed moment values
+            with st.expander("📋 View Detailed Bending Moment Values", expanded=False):
+                st.dataframe(bmd_data, use_container_width=True, hide_index=True)
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Max Moment +", f"{bmd_data['Moment (kNm)'].astype(float).max():.2f} kNm")
+                col2.metric("Max Moment -", f"{bmd_data['Moment (kNm)'].astype(float).min():.2f} kNm")
+                col3.metric("Total Points", len(bmd_data))
+            
             st.divider()
             
-            st.subheader("Deflection Diagram")
+            # Deflection Diagram
+            st.subheader("📊 Deflection Diagram")
             defl_fig = plot_deflection(st.session_state.members, st.session_state.nodes,
                                       st.session_state.displacements)
             st.plotly_chart(defl_fig, use_container_width=True)
             
         except Exception as e:
             st.error(f"Error plotting diagrams: {e}")
+            st.exception(e)
     else:
         st.info("👈 Run analysis first to see diagrams!")
 
@@ -593,50 +523,11 @@ with tab6:
     st.markdown("""
     ### 📚 Quick Start Guide
     
-    #### 🏗️ What Can This App Analyze?
-    
-    **Beams:**
-    - ✅ Simply supported beams
-    - ✅ Cantilever beams
-    - ✅ **Continuous beams (UNLIMITED spans!)**
-    - ✅ Beams with overhangs
-    - ✅ Composite loading on any span
-    
-    **Frames:**
-    - ✅ Portal frames (single/multi-bay)
-    - ✅ **Multi-storey frames (any height)**
-    - ✅ Braced frames
-    - ✅ Frames with inclined members
-    - ✅ 2D frames of any configuration
-    
-    **Special Cases:**
-    - ✅ Support settlements (Dx, Dy, Rotation)
-    - ✅ Temperature effects
-    - ✅ Multiple loads per member
-    - ✅ Any combination of supports
-    
-    ---
-    
     #### 1️⃣ Structure Definition
-    
-    **For Multi-Span Beams (e.g., 5 spans):**
-    - **Nodes**: 6 nodes (one at each support)
-    - **Members**: 5 members (one per span)
-    - **Supports**: 6 supports (typically: 1 Pinned + 5 Rollers)
-    - **Loads**: Apply separately to each member
-    
-    **For Frames (e.g., 2-storey portal):**
-    - **Nodes**: Define at all joints (corners, intersections)
-    - **Members**: Columns and beams connecting nodes
-    - **Supports**: Fixed or Pinned at base
-    - **Loads**: On beams (gravity) and columns (lateral)
-    
-    **Key Rule:** 
-    - Number of **nodes** = Number of **joints/supports**
-    - Number of **members** = Number of **spans/columns/beams**
-    - Multiple loads? Add multiple entries with same member number!
-    
-    ---
+    - **Nodes**: Define joint locations with X, Y coordinates (in meters)
+    - **Members**: Connect nodes to create beams/columns. Specify E, I, and A
+    - **Supports**: Add Fixed, Pinned, or Roller supports at nodes
+    - **Loads**: Apply UDL, VDL, Point loads, or Moments on members
     
     #### 2️⃣ Analysis Method
     This application uses the **Direct Stiffness Method** with:
@@ -644,140 +535,43 @@ with tab6:
     - Fixed end moments for all load types
     - Support settlement effects
     - Slope-deflection equations
-    - Matrix assembly and solution using NumPy/SciPy
-    
-    ---
     
     #### 3️⃣ Sign Conventions
     - **Moments**: Sagging (positive), Hogging (negative)
     - **Shear**: Positive upward on left face
     - **Displacements**: Positive in positive X, Y directions
-    - **Axial Forces**: Tension positive, Compression negative
-    
-    ---
     
     #### 4️⃣ Load Types
-    - **UDL**: Uniformly Distributed Load (W1 = intensity in kN/m)
-    - **VDL**: Varying Distributed Load (trapezoidal, W1 at start, W2 at end)
-    - **Point Load**: Concentrated force at distance 'a' from start (kN)
-    - **Moment**: Concentrated moment at distance 'a' from start (kNm)
+    - **UDL**: Uniformly Distributed Load (W1 = W2)
+    - **VDL**: Varying Distributed Load (trapezoidal, W1 ≠ W2)
+    - **Point Load**: Concentrated force at distance 'a' from start
+    - **Moment**: Concentrated moment at distance 'a' from start
     
-    **Multiple loads on same member?** Just add multiple load entries with the same member number!
-    
-    Example: Member 2 with UDL + 2 Point Loads:
-    ```
-    Member | Type       | Values
-    -------|------------|--------
-    2      | UDL        | W1=10
-    2      | Point Load | P=50, a=2
-    2      | Point Load | P=30, a=4
-    ```
-    
-    ---
-    
-    #### 5️⃣ Support Types
-    
-    | Type   | Restraints         | Use For |
-    |--------|-------------------|---------|
-    | Fixed  | Dx, Dy, Rotation  | Cantilever ends, frame bases |
-    | Pinned | Dx, Dy            | Simple supports, frame bases |
-    | Roller | Dy only           | Interior supports, allows horizontal movement |
-    
-    ---
-    
-    #### 6️⃣ Support Settlements
+    #### 5️⃣ Support Settlements
     - Enter Dx, Dy, or Rotation values for any support
     - System automatically calculates equivalent loads
-    - Useful for foundation settlement analysis
     
-    ---
-    
-    #### 7️⃣ Reinforcement Design
+    #### 6️⃣ Reinforcement Design
     - Based on IS 456:2000 code
     - Limit state design method
     - Automatically checks for singly/doubly reinforced sections
-    - Suggests bar arrangements
     
-    ---
-    
-    ### 🎯 Common Problems & Solutions
-    
-    **Problem Type 1: 5-Span Continuous Beam**
-    ```
-    Nodes: 6 (at X = 0, 5, 10, 15, 20, 25)
-    Members: 5 (connecting consecutive nodes)
-    Supports: 6 (1 Pinned, 5 Rollers)
-    Loads: Apply to each member as needed
-    ```
-    
-    **Problem Type 2: Portal Frame**
-    ```
-    Nodes: 4 (corners: base-left, top-left, top-right, base-right)
-    Members: 3 (left column, beam, right column)
-    Supports: 2 Fixed (at bases)
-    Loads: UDL on beam + lateral load on beam/column
-    ```
-    
-    **Problem Type 3: 3-Storey Frame**
-    ```
-    Nodes: Define at each floor level and column base
-    Members: All columns and beams
-    Supports: Fixed at ground level
-    Loads: Floor loads on beams, wind loads laterally
-    ```
-    
-    ---
-    
-    ### 💡 Pro Tips
-    
-    ✅ Use example presets to understand structure setup  
-    ✅ Always check structure preview before analysis  
-    ✅ For frames: Draw on paper first, number nodes systematically  
-    ✅ Start simple, then add complexity  
-    ✅ Export results using browser's print function (Ctrl+P)  
-    ✅ For large structures (10+ members): Be patient, analysis may take 5-10 seconds  
-    
-    ---
+    ### 🎯 Tips
+    - Use example presets to get started quickly
+    - Always check structure preview before analysis
+    - Results include reactions, forces, and diagrams
+    - Export results using browser's print function
     
     ### 🐛 Troubleshooting
-    
-    **"Analysis failed"**
-    - Ensure all nodes are numbered correctly (start from 1)
+    - Ensure all nodes are numbered sequentially
     - Check that members reference existing nodes
     - Verify at least one support is defined
-    - Make sure structure is stable (not a mechanism)
-    
-    **"Singular matrix"**
-    - Structure is unstable (insufficient supports)
-    - Check support configuration
-    - Ensure proper boundary conditions
-    
-    **Results seem wrong**
-    - Verify load values and units (kN, kNm, m)
-    - Check member orientations (Node_I to Node_J)
-    - Review support types (Fixed vs Pinned vs Roller)
-    
-    ---
+    - Make sure load values are in correct units
     
     ### 📖 References
     - Hibbeler, R.C. "Structural Analysis"
     - IS 456:2000 - Indian Standard for RCC Design
     - Matrix Structural Analysis - McGuire, Gallagher, Ziemian
-    - Ghali, A., Neville, A.M. "Structural Analysis: A Unified Classical and Matrix Approach"
-    
-    ---
-    
-    ### 🎓 For CEG 410 Group 8 Students
-    
-    This application demonstrates:
-    - ✅ Direct Stiffness Method (matrix approach)
-    - ✅ Slope-Deflection equations
-    - ✅ Fixed End Moments for all load cases
-    - ✅ Support settlement analysis
-    - ✅ Complete force analysis (reactions, moments, shears)
-    - ✅ IS 456:2000 reinforcement design
-    
-    **Perfect for:** Assignments, projects, and verification of hand calculations!
     """)
 
 # Footer
@@ -789,4 +583,3 @@ st.markdown("""
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
-
