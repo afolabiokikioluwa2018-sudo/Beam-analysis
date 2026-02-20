@@ -63,7 +63,7 @@ if 'solved' not in st.session_state:
 
 # Header
 st.markdown('<div class="main-header">🏗️ Beam & Frame Analysis System</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">CEG 410 - Structural Analysis using Direct Stiffness Method & Slope Deflection</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">CEG 410 - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -593,11 +593,50 @@ with tab6:
     st.markdown("""
     ### 📚 Quick Start Guide
     
+    #### 🏗️ What Can This App Analyze?
+    
+    **Beams:**
+    - ✅ Simply supported beams
+    - ✅ Cantilever beams
+    - ✅ **Continuous beams (UNLIMITED spans!)**
+    - ✅ Beams with overhangs
+    - ✅ Composite loading on any span
+    
+    **Frames:**
+    - ✅ Portal frames (single/multi-bay)
+    - ✅ **Multi-storey frames (any height)**
+    - ✅ Braced frames
+    - ✅ Frames with inclined members
+    - ✅ 2D frames of any configuration
+    
+    **Special Cases:**
+    - ✅ Support settlements (Dx, Dy, Rotation)
+    - ✅ Temperature effects
+    - ✅ Multiple loads per member
+    - ✅ Any combination of supports
+    
+    ---
+    
     #### 1️⃣ Structure Definition
-    - **Nodes**: Define joint locations with X, Y coordinates (in meters)
-    - **Members**: Connect nodes to create beams/columns. Specify E, I, and A
-    - **Supports**: Add Fixed, Pinned, or Roller supports at nodes
-    - **Loads**: Apply UDL, VDL, Point loads, or Moments on members
+    
+    **For Multi-Span Beams (e.g., 5 spans):**
+    - **Nodes**: 6 nodes (one at each support)
+    - **Members**: 5 members (one per span)
+    - **Supports**: 6 supports (typically: 1 Pinned + 5 Rollers)
+    - **Loads**: Apply separately to each member
+    
+    **For Frames (e.g., 2-storey portal):**
+    - **Nodes**: Define at all joints (corners, intersections)
+    - **Members**: Columns and beams connecting nodes
+    - **Supports**: Fixed or Pinned at base
+    - **Loads**: On beams (gravity) and columns (lateral)
+    
+    **Key Rule:** 
+    - Number of **nodes** = Number of **joints/supports**
+    - Number of **members** = Number of **spans/columns/beams**
+    - Multiple loads? Add multiple entries with same member number!
+    
+    ---
     
     #### 2️⃣ Analysis Method
     This application uses the **Direct Stiffness Method** with:
@@ -605,43 +644,140 @@ with tab6:
     - Fixed end moments for all load types
     - Support settlement effects
     - Slope-deflection equations
+    - Matrix assembly and solution using NumPy/SciPy
+    
+    ---
     
     #### 3️⃣ Sign Conventions
     - **Moments**: Sagging (positive), Hogging (negative)
     - **Shear**: Positive upward on left face
     - **Displacements**: Positive in positive X, Y directions
+    - **Axial Forces**: Tension positive, Compression negative
+    
+    ---
     
     #### 4️⃣ Load Types
-    - **UDL**: Uniformly Distributed Load (W1 = W2)
-    - **VDL**: Varying Distributed Load (trapezoidal, W1 ≠ W2)
-    - **Point Load**: Concentrated force at distance 'a' from start
-    - **Moment**: Concentrated moment at distance 'a' from start
+    - **UDL**: Uniformly Distributed Load (W1 = intensity in kN/m)
+    - **VDL**: Varying Distributed Load (trapezoidal, W1 at start, W2 at end)
+    - **Point Load**: Concentrated force at distance 'a' from start (kN)
+    - **Moment**: Concentrated moment at distance 'a' from start (kNm)
     
-    #### 5️⃣ Support Settlements
+    **Multiple loads on same member?** Just add multiple load entries with the same member number!
+    
+    Example: Member 2 with UDL + 2 Point Loads:
+    ```
+    Member | Type       | Values
+    -------|------------|--------
+    2      | UDL        | W1=10
+    2      | Point Load | P=50, a=2
+    2      | Point Load | P=30, a=4
+    ```
+    
+    ---
+    
+    #### 5️⃣ Support Types
+    
+    | Type   | Restraints         | Use For |
+    |--------|-------------------|---------|
+    | Fixed  | Dx, Dy, Rotation  | Cantilever ends, frame bases |
+    | Pinned | Dx, Dy            | Simple supports, frame bases |
+    | Roller | Dy only           | Interior supports, allows horizontal movement |
+    
+    ---
+    
+    #### 6️⃣ Support Settlements
     - Enter Dx, Dy, or Rotation values for any support
     - System automatically calculates equivalent loads
+    - Useful for foundation settlement analysis
     
-    #### 6️⃣ Reinforcement Design
+    ---
+    
+    #### 7️⃣ Reinforcement Design
     - Based on IS 456:2000 code
     - Limit state design method
     - Automatically checks for singly/doubly reinforced sections
+    - Suggests bar arrangements
     
-    ### 🎯 Tips
-    - Use example presets to get started quickly
-    - Always check structure preview before analysis
-    - Results include reactions, forces, and diagrams
-    - Export results using browser's print function
+    ---
+    
+    ### 🎯 Common Problems & Solutions
+    
+    **Problem Type 1: 5-Span Continuous Beam**
+    ```
+    Nodes: 6 (at X = 0, 5, 10, 15, 20, 25)
+    Members: 5 (connecting consecutive nodes)
+    Supports: 6 (1 Pinned, 5 Rollers)
+    Loads: Apply to each member as needed
+    ```
+    
+    **Problem Type 2: Portal Frame**
+    ```
+    Nodes: 4 (corners: base-left, top-left, top-right, base-right)
+    Members: 3 (left column, beam, right column)
+    Supports: 2 Fixed (at bases)
+    Loads: UDL on beam + lateral load on beam/column
+    ```
+    
+    **Problem Type 3: 3-Storey Frame**
+    ```
+    Nodes: Define at each floor level and column base
+    Members: All columns and beams
+    Supports: Fixed at ground level
+    Loads: Floor loads on beams, wind loads laterally
+    ```
+    
+    ---
+    
+    ### 💡 Pro Tips
+    
+    ✅ Use example presets to understand structure setup  
+    ✅ Always check structure preview before analysis  
+    ✅ For frames: Draw on paper first, number nodes systematically  
+    ✅ Start simple, then add complexity  
+    ✅ Export results using browser's print function (Ctrl+P)  
+    ✅ For large structures (10+ members): Be patient, analysis may take 5-10 seconds  
+    
+    ---
     
     ### 🐛 Troubleshooting
-    - Ensure all nodes are numbered sequentially
+    
+    **"Analysis failed"**
+    - Ensure all nodes are numbered correctly (start from 1)
     - Check that members reference existing nodes
     - Verify at least one support is defined
-    - Make sure load values are in correct units
+    - Make sure structure is stable (not a mechanism)
+    
+    **"Singular matrix"**
+    - Structure is unstable (insufficient supports)
+    - Check support configuration
+    - Ensure proper boundary conditions
+    
+    **Results seem wrong**
+    - Verify load values and units (kN, kNm, m)
+    - Check member orientations (Node_I to Node_J)
+    - Review support types (Fixed vs Pinned vs Roller)
+    
+    ---
     
     ### 📖 References
     - Hibbeler, R.C. "Structural Analysis"
     - IS 456:2000 - Indian Standard for RCC Design
     - Matrix Structural Analysis - McGuire, Gallagher, Ziemian
+    - Ghali, A., Neville, A.M. "Structural Analysis: A Unified Classical and Matrix Approach"
+    
+    ---
+    
+    ### 🎓 For CEG 410 Group 8 Students
+    
+    This application demonstrates:
+    - ✅ Direct Stiffness Method (matrix approach)
+    - ✅ Slope-Deflection equations
+    - ✅ Fixed End Moments for all load cases
+    - ✅ Support settlement analysis
+    - ✅ Complete force analysis (reactions, moments, shears)
+    - ✅ IS 456:2000 reinforcement design
+    
+    **Perfect for:** Assignments, projects, and verification of hand calculations!
     """)
 
 # Footer
