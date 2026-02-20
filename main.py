@@ -74,7 +74,8 @@ with st.sidebar:
     example_choice = st.selectbox(
         "Load Example:",
         ["None", "Simply Supported Beam", "Continuous Beam (3 Spans)", 
-         "Portal Frame", "Frame with Settlement"]
+         "Portal Frame", "Frame with Settlement"],
+        key="example_selector"
     )
     
     if st.button("Load Example"):
@@ -256,6 +257,60 @@ with tab2:
     st.header("🔧 Analysis")
     
     if len(st.session_state.nodes) > 0 and len(st.session_state.members) > 0:
+        # Display structure statistics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📍 Nodes", len(st.session_state.nodes))
+        
+        with col2:
+            st.metric("🔗 Members", len(st.session_state.members))
+        
+        with col3:
+            st.metric("⚓ Supports", len(st.session_state.supports))
+        
+        with col4:
+            if st.session_state.solved:
+                n_reactions = len(st.session_state.reactions)
+                st.metric("⚡ Reactions", n_reactions)
+            else:
+                st.metric("⚡ Reactions", "—")
+        
+        st.divider()
+        
+        # Support details table
+        if len(st.session_state.supports) > 0:
+            st.subheader("⚓ Support Configuration")
+            support_summary = st.session_state.supports[['Node', 'Type']].copy()
+            
+            # Count DOFs restrained per support
+            def count_restraints(support_type):
+                if support_type == 'Fixed':
+                    return '3 DOF (Dx, Dy, Rz)'
+                elif support_type == 'Pinned':
+                    return '2 DOF (Dx, Dy)'
+                else:  # Roller
+                    return '1 DOF (Dy)'
+            
+            support_summary['Restraints'] = st.session_state.supports['Type'].apply(count_restraints)
+            
+            # Check for settlements
+            has_settlement = (
+                (st.session_state.supports['Dx'] != 0) | 
+                (st.session_state.supports['Dy'] != 0) | 
+                (st.session_state.supports['Rotation'] != 0)
+            ).any()
+            
+            if has_settlement:
+                support_summary['Settlement'] = st.session_state.supports.apply(
+                    lambda row: '✓' if (row['Dx'] != 0 or row['Dy'] != 0 or row['Rotation'] != 0) else '—',
+                    axis=1
+                )
+            
+            st.dataframe(support_summary, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        
         st.subheader("Structure Preview")
         try:
             fig = plot_structure(st.session_state.nodes, st.session_state.members, 
@@ -274,9 +329,9 @@ with tab2:
                     )
                 
                 with st.spinner("Calculating fixed end actions..."):
-                 F_fixed = calculate_fixed_end_actions(
-    st.session_state.members, st.session_state.loads, dof_map, st.session_state.nodes
-)
+                    F_fixed = calculate_fixed_end_actions(
+                        st.session_state.members, st.session_state.loads, dof_map, st.session_state.nodes
+                    )
                 
                 with st.spinner("Applying boundary conditions..."):
                     K_reduced, F_reduced, fixed_dofs = apply_boundary_conditions(
@@ -307,7 +362,20 @@ with tab2:
                 st.session_state.reactions = reactions
                 st.session_state.solved = True
                 
+                # Display reaction summary immediately
                 st.success("✅ Analysis completed successfully!")
+                
+                # Show reaction summary
+                st.subheader("⚡ Reaction Summary")
+                total_rx = reactions['Rx (kN)'].sum()
+                total_ry = reactions['Ry (kN)'].sum()
+                total_mz = reactions['Mz (kNm)'].sum()
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("ΣRx (kN)", f"{total_rx:.2f}")
+                col2.metric("ΣRy (kN)", f"{total_ry:.2f}")
+                col3.metric("ΣMz (kNm)", f"{total_mz:.2f}")
+                
                 st.balloons()
                 
             except Exception as e:
@@ -340,6 +408,90 @@ with tab3:
         
         st.subheader("🔩 Member End Forces")
         st.dataframe(st.session_state.member_forces, use_container_width=True)
+        
+        st.divider()
+        
+        st.subheader("📊 Shear Force & Bending Moment at Span Ends")
+        st.write("Values at 0% (start) and 100% (end) of each span")
+        
+        # Calculate SF and BM at span ends
+        span_forces = []
+        
+        for idx, member in st.session_state.members.iterrows():
+            member_id = int(member['Member'])
+            node_i = int(member['Node_I'])
+            node_j = int(member['Node_J'])
+            
+            # Get node coordinates
+            xi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['X'].values[0]
+            yi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['Y'].values[0]
+            xj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['X'].values[0]
+            yj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['Y'].values[0]
+            L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
+            
+            # Get member forces
+            forces = st.session_state.member_forces[st.session_state.member_forces['Member'] == member_id].iloc[0]
+            V_i = forces['V_i']
+            M_i = forces['M_i']
+            V_j = -forces['V_j']
+            M_j = forces['M_j']
+            
+            # Calculate SF and BM at 0% (start of span)
+            SF_start = V_i
+            BM_start = M_i
+            
+            # Calculate SF and BM at 100% (end of span)
+            # Get loads on this member
+            member_loads = st.session_state.loads[st.session_state.loads['Member'] == member_id]
+            
+            # Calculate shear and moment at end considering all loads
+            SF_end = V_i
+            BM_end = M_i + V_i * L
+            
+            for _, load in member_loads.iterrows():
+                if load['Type'] == 'UDL':
+                    w = load['W1']
+                    SF_end -= w * L
+                    BM_end -= w * L**2 / 2
+                    
+                elif load['Type'] == 'VDL':
+                    w1 = load['W1']
+                    w2 = load['W2']
+                    SF_end -= (w1 + w2) * L / 2
+                    BM_end -= (w1 + w2) * L**2 / 6
+                    
+                elif load['Type'] == 'Point Load':
+                    P = load['P']
+                    a = load['a']
+                    SF_end -= P
+                    BM_end -= P * (L - a)
+                    
+                elif load['Type'] == 'Moment':
+                    M = load['M']
+                    BM_end += M
+            
+            span_forces.append({
+                'Span': f'Member {member_id}',
+                'From Node': node_i,
+                'To Node': node_j,
+                'Length (m)': f'{L:.3f}',
+                'SF @ 0% (kN)': f'{SF_start:.3f}',
+                'BM @ 0% (kNm)': f'{BM_start:.3f}',
+                'SF @ 100% (kN)': f'{SF_end:.3f}',
+                'BM @ 100% (kNm)': f'{BM_end:.3f}'
+            })
+        
+        span_forces_df = pd.DataFrame(span_forces)
+        st.dataframe(span_forces_df, use_container_width=True, hide_index=True)
+        
+        # Add explanation
+        st.info("""
+        📌 **Note:** 
+        - **0%** = Start of span (at Node I)
+        - **100%** = End of span (at Node J)
+        - **Positive SF** = Upward on left face
+        - **Positive BM** = Sagging (tension at bottom)
+        """)
         
     else:
         st.info("👈 Run analysis first to see results!")
