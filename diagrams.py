@@ -3,6 +3,7 @@ Plotting functions for structure visualization and diagrams
 """
 
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
 
@@ -138,9 +139,14 @@ def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
     """
     Plot Shear Force Diagram for all members with accurate representation
     """
-    fig = go.Figure()
-    
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+    try:
+        fig = go.Figure()
+        
+        if len(members_df) == 0:
+            fig.add_annotation(text="No members to plot", showarrow=False)
+            return fig
+        
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     
     for idx, member in members_df.iterrows():
         member_id = int(member['Member'])
@@ -260,6 +266,17 @@ def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
     )
     
     return fig
+    
+    except Exception as e:
+        # Return a valid figure with error message
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"Error creating SFD: {str(e)}",
+            showarrow=False,
+            xref="paper", yref="paper",
+            x=0.5, y=0.5
+        )
+        return fig
 
 
 def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
@@ -267,9 +284,14 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
     Plot Bending Moment Diagram for all members with accurate curves
     Sign convention: Sagging positive
     """
-    fig = go.Figure()
-    
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+    try:
+        fig = go.Figure()
+        
+        if len(members_df) == 0:
+            fig.add_annotation(text="No members to plot", showarrow=False)
+            return fig
+        
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     
     for idx, member in members_df.iterrows():
         member_id = int(member['Member'])
@@ -397,6 +419,17 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
     )
     
     return fig
+    
+    except Exception as e:
+        # Return a valid figure with error message
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"Error creating BMD: {str(e)}",
+            showarrow=False,
+            xref="paper", yref="paper",
+            x=0.5, y=0.5
+        )
+        return fig
 
 
 def plot_deflection(members_df, nodes_df, displacements):
