@@ -271,12 +271,33 @@ with tab4:
     if st.session_state.solved:
         st.plotly_chart(
             plot_sfd(
-                st.session_state.members,
-                st.session_state.nodes,
-                st.session_state.member_forces,
-                st.session_state.loads
-            ),
-            use_container_width=True
+                import streamlit as st
+from diagrams import plot_sfd
+
+# ---- SESSION STATE SAFETY ----
+if "members" not in st.session_state:
+    st.session_state.members = []
+
+if "nodes" not in st.session_state:
+    st.session_state.nodes = []
+
+if "loads" not in st.session_state:
+    st.session_state.loads = []
+
+
+st.title("Beam & Frame Analysis")
+
+# ---- AFTER USER INPUTS (IMPORTANT) ----
+fig = plot_sfd(
+    st.session_state.members,
+    st.session_state.nodes,
+    st.session_state.loads
+)
+
+if fig is None:
+    st.warning("Add at least one structural member to view the SFD.")
+else:
+    st.plotly_chart(fig, use_container_width=True)
         )
 
         st.plotly_chart(
@@ -340,3 +361,4 @@ st.markdown(
     "<p style='text-align:center;color:#666'>CEG 410 – Structural Analysis Project</p>",
     unsafe_allow_html=True
 )
+
