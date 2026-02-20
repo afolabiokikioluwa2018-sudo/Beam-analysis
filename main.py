@@ -63,7 +63,7 @@ if 'solved' not in st.session_state:
 
 # Header
 st.markdown('<div class="main-header">🏗️ Beam & Frame Analysis System</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">CEG 410 - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">CEG 410 Group 8  - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -789,3 +789,4 @@ st.markdown("""
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
+
