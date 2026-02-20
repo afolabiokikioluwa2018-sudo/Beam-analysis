@@ -73,10 +73,20 @@ with st.sidebar:
     st.subheader("Quick Start Examples")
     example_choice = st.selectbox(
         "Load Example:",
-        ["None", "Simply Supported Beam", "Continuous Beam (3 Spans)", 
-         "Portal Frame", "Frame with Settlement"],
+        ["None", "Simply Supported Beam", "Continuous Beam - Multi Span", 
+         "Portal Frame", "Multi-Storey Frame", "Frame with Settlement"],
         key="example_selector"
     )
+    
+    # Info about capabilities
+    st.info("""
+    **📐 Capabilities:**
+    - ✅ Unlimited spans (beams)
+    - ✅ Multi-storey frames (2D)
+    - ✅ Any support combination
+    - ✅ Multiple loads per member
+    - ✅ Support settlements
+    """)
     
     if st.button("Load Example"):
         if example_choice != "None":
