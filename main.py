@@ -1275,6 +1275,8 @@ st.markdown("""
 <div style='text-align: center; color: #666; padding: 20px;'>
     <p><b>CEG 410 - Structural Analysis Project</b></p>
     <p>Direct Stiffness Method | Slope-Deflection Analysis | BS 8110:1997 Design</p>
+     <p> Developed by Okik's</p
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
+
