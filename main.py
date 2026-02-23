@@ -109,12 +109,15 @@ with st.sidebar:
     st.divider()
     
     # Reinforcement design
-    st.subheader("🔧 Reinforcement Design")
-    st.session_state.fck = st.number_input("Concrete Grade fck (N/mm²)", value=25.0, min_value=15.0)
-    st.session_state.fy = st.number_input("Steel Grade fy (N/mm²)", value=415.0, min_value=250.0)
+    st.subheader("🔧 Reinforcement Design (BS 8110)")
+    st.session_state.fck = st.number_input("Concrete Grade fcu (N/mm²)", value=30.0, min_value=20.0, 
+                                           help="BS 8110: Typical grades 25, 30, 35, 40")
+    st.session_state.fy = st.number_input("Steel Grade fy (N/mm²)", value=460.0, min_value=250.0,
+                                          help="BS 8110: Typical grades 250, 460")
     st.session_state.beam_width = st.number_input("Beam Width b (mm)", value=300.0, min_value=150.0)
-    st.session_state.beam_depth = st.number_input("Beam Depth d (mm)", value=500.0, min_value=200.0)
-    st.session_state.cover = st.number_input("Clear Cover (mm)", value=25.0, min_value=20.0)
+    st.session_state.beam_depth = st.number_input("Overall Depth h (mm)", value=500.0, min_value=200.0)
+    st.session_state.cover = st.number_input("Cover to reinforcement (mm)", value=25.0, min_value=20.0,
+                                             help="BS 8110: Minimum 25mm for mild exposure")
 
 # Main content tabs
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -673,53 +676,375 @@ with tab4:
         st.info("👈 Run analysis first to see diagrams!")
 
 with tab5:
-    st.header("🏗️ Reinforcement Design")
+    st.header("🏗️ Reinforcement Design (BS 8110:1997)")
     
     if st.session_state.solved:
-        st.info("📋 Design based on IS 456:2000 and limit state method")
+        st.info("📋 Design based on BS 8110:1997 - Structural Use of Concrete")
         
         # Get max moment for design
-        max_moment = st.session_state.member_forces['M_i'].abs().max()
-        max_moment = max(max_moment, st.session_state.member_forces['M_j'].abs().max())
+        max_moment_positive = 0
+        max_moment_negative = 0
+        max_moment_member = 1
         
-        st.metric("Maximum Bending Moment", f"{max_moment:.2f} kNm")
+        for idx, row in st.session_state.member_forces.iterrows():
+            M_i = row['M_i']
+            M_j = row['M_j']
+            if M_i > max_moment_positive:
+                max_moment_positive = M_i
+                max_moment_member = row['Member']
+            if M_j > max_moment_positive:
+                max_moment_positive = M_j
+            if M_i < max_moment_negative:
+                max_moment_negative = M_i
+            if M_j < max_moment_negative:
+                max_moment_negative = M_j
         
-        # Design calculations
+        max_moment_design = max(abs(max_moment_positive), abs(max_moment_negative))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Maximum Sagging Moment", f"{max_moment_positive:.2f} kNm")
+        with col2:
+            st.metric("Maximum Hogging Moment", f"{abs(max_moment_negative):.2f} kNm")
+        
+        st.write(f"**Designing for critical moment:** {max_moment_design:.2f} kNm")
+        
+        # Design parameters
         b = st.session_state.beam_width
-        d = st.session_state.beam_depth - st.session_state.cover - 10  # Effective depth
-        fck = st.session_state.fck
+        h = st.session_state.beam_depth
+        cover = st.session_state.cover
+        fcu = st.session_state.fck  # Using fcu for BS 8110
         fy = st.session_state.fy
         
+        # Assume 20mm bars for calculation of d
+        bar_dia = 20
+        d = h - cover - bar_dia/2 - 8  # 8mm links
+        
+        st.write(f"**Section Properties:**")
+        st.write(f"- Width (b) = {b:.0f} mm")
+        st.write(f"- Overall depth (h) = {h:.0f} mm")
+        st.write(f"- Effective depth (d) = {d:.0f} mm")
+        st.write(f"- Concrete grade (fcu) = {fcu:.0f} N/mm²")
+        st.write(f"- Steel grade (fy) = {fy:.0f} N/mm²")
+        
+        st.divider()
+        
         # Convert moment to N-mm
-        Mu = max_moment * 1e6
+        M = max_moment_design * 1e6  # kNm to Nmm
         
-        # Calculate required steel
-        Mu_lim = 0.138 * fck * b * d * d
+        # BS 8110 design constants
+        # γm for concrete = 1.5 (Table 2.2)
+        # γm for steel = 1.05 (Table 2.2)
+        gamma_m_concrete = 1.5
+        gamma_m_steel = 1.05
         
-        if Mu <= Mu_lim:
-            st.success("✅ Section is singly reinforced")
-            # Calculate Ast
-            k = Mu / (fck * b * d * d)
-            j = 1 - k / 3
-            Ast = Mu / (0.87 * fy * j * d)
-            
-            st.write(f"**Required tension steel:** {Ast:.0f} mm²")
-            
-            # Suggest bar arrangement
-            bar_sizes = [12, 16, 20, 25, 32]
-            for bar_dia in bar_sizes:
-                bar_area = np.pi * bar_dia**2 / 4
-                n_bars = np.ceil(Ast / bar_area)
-                if n_bars <= 6:
-                    st.write(f"- Use {int(n_bars)} bars of {bar_dia}mm ϕ (Provided: {n_bars*bar_area:.0f} mm²)")
-                    break
+        # Design stresses
+        # For fcu ≤ 40 N/mm², stress block factor = 0.67fcu/γm
+        design_concrete_stress = 0.67 * fcu / gamma_m_concrete
+        design_steel_stress = fy / gamma_m_steel
+        
+        # K = M/(bd²fcu)
+        K = M / (b * d**2 * fcu)
+        
+        # K' (balanced condition) - BS 8110 Clause 3.4.4.4
+        # For fy = 460, K' = 0.156
+        # For fy = 250, K' = 0.207
+        if fy == 460:
+            K_prime = 0.156
+        elif fy == 250:
+            K_prime = 0.207
         else:
-            st.warning("⚠️ Section requires doubly reinforced design")
-            st.write("Moment exceeds limiting moment - compression steel required")
+            # Linear interpolation
+            K_prime = 0.156 + (fy - 460) * (0.207 - 0.156) / (250 - 460)
         
-        # Minimum steel check
-        Ast_min = 0.85 * b * d / fy
-        st.write(f"**Minimum steel required:** {Ast_min:.0f} mm²")
+        st.subheader("📐 Design Calculations")
+        st.write(f"**K = M/(bd²fcu) = {K:.4f}**")
+        st.write(f"**K' (balanced) = {K_prime:.3f}**")
+        
+        if K <= K_prime:
+            st.success("✅ **Section is SINGLY REINFORCED** (Tension steel only)")
+            
+            # Calculate lever arm (z)
+            # z = d[0.5 + √(0.25 - K/0.9)]
+            z = d * (0.5 + np.sqrt(0.25 - K/0.9))
+            
+            # But z should not be greater than 0.95d
+            if z > 0.95 * d:
+                z = 0.95 * d
+            
+            st.write(f"**Lever arm (z) = {z:.0f} mm** (≤ 0.95d = {0.95*d:.0f} mm)")
+            
+            # Required tension steel
+            # As = M / (0.87 * fy * z)
+            As_req = M / (0.87 * fy * z)
+            
+            st.write(f"**Required tension steel (As) = {As_req:.0f} mm²**")
+            
+            # Minimum steel (BS 8110 Clause 3.12.5.3)
+            # As,min = 0.13% of bh for fy = 460
+            # As,min = 0.24% of bh for fy = 250
+            if fy == 460:
+                As_min = 0.0013 * b * h
+            elif fy == 250:
+                As_min = 0.0024 * b * h
+            else:
+                As_min = 0.0013 * b * h  # Conservative
+            
+            st.write(f"**Minimum steel required (BS 8110) = {As_min:.0f} mm²**")
+            
+            As_provide = max(As_req, As_min)
+            
+            st.divider()
+            st.subheader("🔩 Bar Arrangement")
+            
+            # Suggest bar sizes
+            bar_sizes = [12, 16, 20, 25, 32]
+            bar_areas = [113, 201, 314, 491, 804]  # mm² for each bar
+            
+            st.write("**Suggested arrangements:**")
+            
+            for bar_dia, bar_area in zip(bar_sizes, bar_areas):
+                n_bars = np.ceil(As_provide / bar_area)
+                As_provided = n_bars * bar_area
+                
+                if n_bars <= 6 and n_bars >= 2:  # Practical range
+                    utilization = (As_provide / As_provided) * 100
+                    st.write(f"- **{int(n_bars)} bars of {bar_dia}mm ϕ** → Provided: {As_provided:.0f} mm² ({utilization:.1f}% utilized)")
+            
+            # Check maximum steel (BS 8110 Clause 3.12.6.1)
+            # Maximum = 4% of gross cross-sectional area
+            As_max = 0.04 * b * h
+            
+            st.info(f"💡 **Maximum steel allowed:** {As_max:.0f} mm² (4% of bh)")
+            
+            if As_provide > As_max:
+                st.error("⚠️ Steel area exceeds maximum! Consider increasing section size.")
+            
+        else:
+            st.warning("⚠️ **Section requires DOUBLY REINFORCED design** (Compression steel needed)")
+            st.write(f"K = {K:.4f} > K' = {K_prime:.3f}")
+            
+            st.write("**Design procedure for doubly reinforced section:**")
+            
+            # Moment resisted by concrete (Mc)
+            Mc = K_prime * fcu * b * d**2
+            
+            st.write(f"1. Moment capacity as singly reinforced = {Mc/1e6:.2f} kNm")
+            st.write(f"2. Additional moment requiring compression steel = {(M - Mc)/1e6:.2f} kNm")
+            
+            # Lever arm for singly reinforced part
+            z = 0.775 * d  # Approximate for K = K'
+            
+            # Tension steel for Mc
+            As1 = Mc / (0.87 * fy * z)
+            
+            # Additional tension steel for (M - Mc)
+            d_prime = cover + 8 + bar_dia/2  # Depth to compression steel
+            As2 = (M - Mc) / (0.87 * fy * (d - d_prime))
+            
+            # Total tension steel
+            As_total = As1 + As2
+            
+            # Compression steel
+            # Assuming fsc = 0.87fy (steel yields)
+            Asc = (M - Mc) / (0.87 * fy * (d - d_prime))
+            
+            st.write(f"3. **Required tension steel (As) = {As_total:.0f} mm²**")
+            st.write(f"4. **Required compression steel (A'sc) = {Asc:.0f} mm²**")
+            
+            st.info("💡 Note: Detailed doubly reinforced design requires checking compression steel stress. Consider increasing beam depth if possible.")
+        
+        st.divider()
+        
+        # Shear design
+        st.subheader("✂️ Shear Design Check")
+        
+        # Get maximum shear
+        max_shear = max(abs(st.session_state.member_forces['V_i'].max()), 
+                       abs(st.session_state.member_forces['V_j'].max()))
+        
+        st.write(f"**Maximum shear force (V) = {max_shear:.2f} kN**")
+        
+        # Shear stress
+        v = (max_shear * 1000) / (b * d)  # N/mm²
+        
+        st.write(f"**Shear stress (v) = V/(bd) = {v:.3f} N/mm²**")
+        
+        # Concrete shear stress (vc) - BS 8110 Table 3.8
+        # Simplified: vc depends on (100As/bd) and fcu
+        As_bd_percent = (As_provide / (b * d)) * 100
+        
+        # Simplified vc calculation (conservative)
+        if fcu == 25:
+            vc = 0.4  # N/mm² (conservative)
+        elif fcu == 30:
+            vc = 0.45
+        elif fcu == 40:
+            vc = 0.5
+        else:
+            vc = 0.4  # Conservative
+        
+        st.write(f"**Concrete shear strength (vc) ≈ {vc:.2f} N/mm²** (BS 8110 Table 3.8)")
+        
+        if v < vc:
+            st.success(f"✅ **No shear reinforcement required** (v < vc)")
+            st.write("Provide nominal links as per BS 8110 Clause 3.12.7")
+        elif v < 0.8 * np.sqrt(fcu):
+            st.warning(f"⚠️ **Shear links required** (v > vc)")
+            
+            # Required shear reinforcement
+            # Asv/sv = bv(v - vc)/(0.87fyv)
+            # Assume fyv = fy and 8mm links (Asv = 2 x 50 = 100mm² for 2 legs)
+            fyv = fy
+            Asv = 2 * 50  # Two legs of 8mm (50mm² each)
+            
+            sv_required = (Asv * 0.87 * fyv) / (b * (v - vc))
+            
+            st.write(f"**Required link spacing (sv) = {sv_required:.0f} mm**")
+            st.write(f"**Provide 8mm links @ {min(int(sv_required), 300):.0f}mm centers**")
+            st.info("💡 Maximum spacing = 0.75d or 300mm (BS 8110 Clause 3.12.7)")
+            
+        else:
+            st.error(f"⚠️ **Section inadequate for shear!** v > 0.8√fcu")
+            st.write("Consider increasing beam depth or width")
+        st.divider()
+        
+        # Deflection check
+        st.subheader("📏 Deflection Criteria (BS 8110 Clause 3.4.6)")
+        
+        st.write("**Allowable Span/Effective Depth Ratios (BS 8110 Table 3.9)**")
+        
+        # Get maximum span
+        max_span = 0
+        max_span_member = 1
+        
+        for idx, member in st.session_state.members.iterrows():
+            member_id = int(member['Member'])
+            node_i = int(member['Node_I'])
+            node_j = int(member['Node_J'])
+            
+            xi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['X'].values[0]
+            yi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['Y'].values[0]
+            xj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['X'].values[0]
+            yj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['Y'].values[0]
+            L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
+            
+            if L > max_span:
+                max_span = L
+                max_span_member = member_id
+        
+        # Convert to mm
+        span_mm = max_span * 1000
+        
+        st.write(f"**Critical span (Member {max_span_member}):** {span_mm:.0f} mm = {max_span:.2f} m")
+        st.write(f"**Effective depth (d):** {d:.0f} mm")
+        
+        # Actual span/depth ratio
+        actual_ratio = span_mm / d
+        st.write(f"**Actual span/effective depth ratio = {actual_ratio:.2f}**")
+        
+        # Basic span/depth ratios from BS 8110 Table 3.9
+        # For rectangular sections:
+        support_conditions = st.session_state.supports['Type'].value_counts()
+        
+        if 'Fixed' in support_conditions and support_conditions.get('Fixed', 0) >= 2:
+            basic_ratio = 26  # Cantilever or continuous
+            condition = "Continuous beam"
+        elif 'Pinned' in support_conditions or 'Roller' in support_conditions:
+            if len(st.session_state.supports) == 2:
+                basic_ratio = 20  # Simply supported
+                condition = "Simply supported"
+            else:
+                basic_ratio = 26  # Continuous
+                condition = "Continuous beam"
+        else:
+            basic_ratio = 20  # Default to simply supported
+            condition = "Simply supported"
+        
+        st.write(f"**Basic span/depth ratio (BS 8110 Table 3.9):** {basic_ratio} ({condition})")
+        
+        # Modification factor for tension reinforcement
+        # MF = 0.55 + (477 - fs)/(120(0.9 + M/bd²))
+        # where fs = service stress in tension steel
+        # fs can be approximated as (5/8)fy × (As,req/As,prov) for fy = 460
+        
+        if As_provide > 0:
+            # Service stress approximation
+            fs = (5/8) * fy * (As_req / As_provide)
+            
+            # M/bd² in N/mm²
+            M_bd2 = M / (b * d**2)
+            
+            # Modification factor
+            MF = 0.55 + (477 - fs) / (120 * (0.9 + M_bd2))
+            
+            # Limit MF
+            if MF > 2.0:
+                MF = 2.0
+            elif MF < 0.55:
+                MF = 0.55
+            
+            st.write(f"**Modification factor for tension steel:** {MF:.3f}")
+            
+            # Allowable span/depth ratio
+            allowable_ratio = basic_ratio * MF
+            
+            st.write(f"**Allowable span/depth ratio = {basic_ratio} × {MF:.3f} = {allowable_ratio:.2f}**")
+            
+            # Check
+            if actual_ratio <= allowable_ratio:
+                percentage = (actual_ratio / allowable_ratio) * 100
+                st.success(f"✅ **DEFLECTION CRITERIA SATISFIED**")
+                st.write(f"Actual ratio ({actual_ratio:.2f}) ≤ Allowable ratio ({allowable_ratio:.2f})")
+                st.write(f"Utilization: {percentage:.1f}%")
+            else:
+                excess = ((actual_ratio - allowable_ratio) / allowable_ratio) * 100
+                st.error(f"❌ **DEFLECTION CRITERIA NOT SATISFIED**")
+                st.write(f"Actual ratio ({actual_ratio:.2f}) > Allowable ratio ({allowable_ratio:.2f})")
+                st.write(f"Exceeds by: {excess:.1f}%")
+                st.warning("⚠️ **Recommendations:**")
+                st.write("- Increase beam depth")
+                st.write("- Reduce span length")
+                st.write("- Provide compression reinforcement")
+                st.write("- Use higher strength concrete")
+        
+        # Actual deflection from analysis
+        st.divider()
+        st.write("**Actual Deflections from Analysis:**")
+        
+        # Find maximum vertical deflection
+        max_deflection = 0
+        max_defl_node = 0
+        
+        for i in range(len(st.session_state.displacements) // 3):
+            dy = abs(st.session_state.displacements[i * 3 + 1])  # Vertical displacement
+            if dy > max_deflection:
+                max_deflection = dy
+                max_defl_node = i + 1
+        
+        max_deflection_mm = max_deflection * 1000  # Convert to mm
+        
+        st.write(f"**Maximum vertical deflection:** {max_deflection_mm:.3f} mm at Node {max_defl_node}")
+        
+        # Deflection limits (BS 8110 Table 3.1)
+        # Span/250 for general members
+        limit_general = span_mm / 250
+        # Span/350 for members supporting brittle finishes
+        limit_brittle = span_mm / 350
+        
+        st.write(f"**Deflection limits (BS 8110):**")
+        st.write(f"- General case: Span/250 = {limit_general:.2f} mm")
+        st.write(f"- Brittle finishes: Span/350 = {limit_brittle:.2f} mm")
+        
+        if max_deflection_mm <= limit_brittle:
+            st.success(f"✅ **Deflection satisfies both criteria** (suitable for brittle finishes)")
+        elif max_deflection_mm <= limit_general:
+            st.success(f"✅ **Deflection satisfies general criteria** (not suitable for brittle finishes)")
+            st.info("💡 May crack plaster or other brittle finishes")
+        else:
+            excess_percent = ((max_deflection_mm - limit_general) / limit_general) * 100
+            st.error(f"❌ **Excessive deflection!** Exceeds limit by {excess_percent:.1f}%")
+            st.warning("⚠️ Increase beam stiffness (depth or I value)")
         
     else:
         st.info("👈 Run analysis first to design reinforcement!")
@@ -830,10 +1155,15 @@ with tab6:
     ---
     
     #### 7️⃣ Reinforcement Design
-    - Based on IS 456:2000 code
+    - Based on **BS 8110:1997** (British Standard)
     - Limit state design method
     - Automatically checks for singly/doubly reinforced sections
-    - Suggests bar arrangements
+    - Suggests bar arrangements (12mm to 32mm bars)
+    - Includes shear design check
+    - Verifies minimum and maximum steel requirements
+    - **Deflection criteria checks (BS 8110 Clause 3.4.6 & Table 3.9)**
+    - Compares actual vs allowable span/depth ratios
+    - Checks actual deflection against limits (Span/250, Span/350)
     
     ---
     
@@ -898,13 +1228,14 @@ with tab6:
     
     ### 📖 References
     - Hibbeler, R.C. "Structural Analysis"
-    - IS 456:2000 - Indian Standard for RCC Design
+    - **BS 8110:1997** - Structural Use of Concrete (British Standard)
     - Matrix Structural Analysis - McGuire, Gallagher, Ziemian
     - Ghali, A., Neville, A.M. "Structural Analysis: A Unified Classical and Matrix Approach"
+    - Mosley, Bungey & Hulse "Reinforced Concrete Design to BS 8110"
     
     ---
     
-    ### 🎓 For CEG 410 Group 8 Students
+    ### 🎓 For CEG 410 Students
     
     This application demonstrates:
     - ✅ Direct Stiffness Method (matrix approach)
@@ -912,9 +1243,30 @@ with tab6:
     - ✅ Fixed End Moments for all load cases
     - ✅ Support settlement analysis
     - ✅ Complete force analysis (reactions, moments, shears)
-    - ✅ IS 456:2000 reinforcement design
+    - ✅ **BS 8110:1997 reinforcement design**
+    - ✅ Shear design and link spacing calculations
     
     **Perfect for:** Assignments, projects, and verification of hand calculations!
+    
+    ---
+    
+    ### 📚 Design Code: BS 8110:1997
+    
+    **Reinforcement Design Standards:**
+    - Concrete grades: fcu = 25, 30, 35, 40 N/mm²
+    - Steel grades: fy = 250, 460 N/mm²
+    - Partial safety factors: γm = 1.5 (concrete), γm = 1.05 (steel)
+    - Minimum cover: 25mm (mild exposure), 35mm (moderate), 40mm+ (severe)
+    - K' values: 0.156 (fy=460), 0.207 (fy=250)
+    - Min steel: 0.13% bh (fy=460), 0.24% bh (fy=250)
+    - Max steel: 4% of gross area
+    - Shear design: BS 8110 Table 3.8 and Clause 3.12.7
+    
+    **Deflection Limits (BS 8110):**
+    - Span/depth ratios: Table 3.9 (Simply supported = 20, Continuous = 26)
+    - Modification factors for steel stress applied
+    - Maximum deflection: Span/250 (general), Span/350 (brittle finishes)
+    - Actual deflections calculated from analysis
     """)
 
 # Footer
@@ -922,7 +1274,7 @@ st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 20px;'>
     <p><b>CEG 410 - Structural Analysis Project</b></p>
-    <p>Direct Stiffness Method | Slope-Deflection Analysis | IS 456:2000 Design</p>
+    <p>Direct Stiffness Method | Slope-Deflection Analysis | BS 8110:1997 Design</p>
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
