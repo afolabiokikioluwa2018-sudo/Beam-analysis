@@ -345,6 +345,7 @@ with tab2:
                     F_fixed = calculate_fixed_end_actions(
                         st.session_state.members, st.session_state.loads, dof_map, st.session_state.nodes
                     )
+                    st.session_state.F_fixed = F_fixed  # Store for display
                 
                 with st.spinner("Applying boundary conditions..."):
                     K_reduced, F_reduced, fixed_dofs = apply_boundary_conditions(
@@ -420,7 +421,108 @@ with tab3:
         st.divider()
         
         st.subheader("🔩 Member End Forces")
+        st.info("""
+        **Sign Convention for Member Forces:**
+        - **Moments (M)**: Positive = Sagging (tension at bottom fiber), Negative = Hogging (tension at top fiber)
+        - **Shear (V)**: Positive = Upward force on left face of section
+        - **Axial (N)**: Positive = Tension, Negative = Compression
+        """)
         st.dataframe(st.session_state.member_forces, use_container_width=True)
+        
+        st.divider()
+        
+        st.subheader("📐 Fixed End Moments (FEM)")
+        st.write("**Fixed end moments and forces for each member due to applied loads**")
+        
+        # Calculate and display FEM for each member
+        fem_data = []
+        
+        for idx, member in st.session_state.members.iterrows():
+            member_id = int(member['Member'])
+            node_i = int(member['Node_I'])
+            node_j = int(member['Node_J'])
+            
+            # Get member length
+            xi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['X'].values[0]
+            yi = st.session_state.nodes[st.session_state.nodes['Node'] == node_i]['Y'].values[0]
+            xj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['X'].values[0]
+            yj = st.session_state.nodes[st.session_state.nodes['Node'] == node_j]['Y'].values[0]
+            L = np.sqrt((xj - xi)**2 + (yj - yi)**2)
+            
+            # Get loads on this member
+            member_loads = st.session_state.loads[st.session_state.loads['Member'] == member_id]
+            
+            if len(member_loads) == 0:
+                fem_data.append({
+                    'Member': member_id,
+                    'Load Type': 'No Load',
+                    'FEM_i (kNm)': 0.0,
+                    'FEM_j (kNm)': 0.0,
+                    'FES_i (kN)': 0.0,
+                    'FES_j (kN)': 0.0
+                })
+            else:
+                for _, load in member_loads.iterrows():
+                    load_type = load['Type']
+                    
+                    if load_type == 'UDL':
+                        w = load['W1']
+                        FEM_i = -w * L**2 / 12
+                        FEM_j = w * L**2 / 12
+                        FES_i = -w * L / 2
+                        FES_j = -w * L / 2
+                        load_desc = f"UDL: {w:.2f} kN/m"
+                        
+                    elif load_type == 'VDL':
+                        w1 = load['W1']
+                        w2 = load['W2']
+                        FEM_i = -(w1 * L**2 / 20) * (7 - w2/w1) if w1 != 0 else 0
+                        FEM_j = (w2 * L**2 / 20) * (7 - w1/w2) if w2 != 0 else 0
+                        FES_i = -(w1 + w2) * L / 2
+                        FES_j = -(w1 + w2) * L / 2
+                        load_desc = f"VDL: {w1:.2f} to {w2:.2f} kN/m"
+                        
+                    elif load_type == 'Point Load':
+                        P = load['P']
+                        a = load['a']
+                        b = load['b'] if load['b'] > 0 else L - a
+                        FEM_i = -P * a * b**2 / L**2
+                        FEM_j = P * a**2 * b / L**2
+                        FES_i = -P * b**2 * (3*a + b) / L**3
+                        FES_j = -P * a**2 * (a + 3*b) / L**3
+                        load_desc = f"Point: {P:.2f} kN @ {a:.2f}m"
+                        
+                    elif load_type == 'Moment':
+                        M_load = load['M']
+                        a = load['a']
+                        FEM_i = -M_load * (1 - a/L)
+                        FEM_j = M_load * a / L
+                        FES_i = 0
+                        FES_j = 0
+                        load_desc = f"Moment: {M_load:.2f} kNm @ {a:.2f}m"
+                    
+                    else:
+                        continue
+                    
+                    fem_data.append({
+                        'Member': member_id,
+                        'Load Type': load_desc,
+                        'FEM_i (kNm)': round(FEM_i, 3),
+                        'FEM_j (kNm)': round(FEM_j, 3),
+                        'FES_i (kN)': round(FES_i, 3),
+                        'FES_j (kN)': round(FES_j, 3)
+                    })
+        
+        fem_df = pd.DataFrame(fem_data)
+        st.dataframe(fem_df, use_container_width=True, hide_index=True)
+        
+        st.info("""
+        📌 **Fixed End Actions:**
+        - **FEM_i, FEM_j**: Fixed end moments at node I and node J (before applying boundary conditions)
+        - **FES_i, FES_j**: Fixed end shears at node I and node J
+        - **Sign Convention**: Negative FEM = Hogging (top tension), Positive FEM = Sagging (bottom tension)
+        - These are the moments and shears that would exist if both ends were fixed
+        """)
         
         st.divider()
         
@@ -460,11 +562,12 @@ with tab3:
                 # Get loads on this member
                 member_loads = st.session_state.loads[st.session_state.loads['Member'] == member_id]
                 
-                # Calculate SF and BM at start
+                # Calculate SF and BM at start (0%)
                 SF_start = V_i
                 BM_start = M_i
                 
-                # Calculate SF and BM at end
+                # Calculate SF and BM at end (100%)
+                # Apply load effects along the span
                 SF_end = V_i
                 BM_end = M_i + V_i * L
                 
@@ -488,7 +591,7 @@ with tab3:
                         
                     elif load['Type'] == 'Moment':
                         M = load['M']
-                        BM_end += M
+                        BM_end -= M  # Applied moment reduces sagging
                 
                 span_forces.append({
                     'Span': f'Member {member_id}',
@@ -1275,9 +1378,6 @@ st.markdown("""
 <div style='text-align: center; color: #666; padding: 20px;'>
     <p><b>CEG 410 - Structural Analysis Project</b></p>
     <p>Direct Stiffness Method | Slope-Deflection Analysis | BS 8110:1997 Design</p>
-     <p> Developed by Okik's</p
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
-
-
