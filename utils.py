@@ -201,6 +201,13 @@ def apply_boundary_conditions(K_global, F_fixed, supports_df, nodes_df, dof_map)
             prescribed_displacements[dof_dy] = dy
             prescribed_displacements[dof_rot] = rot
             
+        elif supp_type == "Cantilever":
+            # Cantilever is same as Fixed (all DOFs restrained)
+            fixed_dofs.extend([dof_dx, dof_dy, dof_rot])
+            prescribed_displacements[dof_dx] = dx
+            prescribed_displacements[dof_dy] = dy
+            prescribed_displacements[dof_rot] = rot
+            
         elif supp_type == "Pinned":
             fixed_dofs.extend([dof_dx, dof_dy])
             prescribed_displacements[dof_dx] = dx
@@ -250,6 +257,7 @@ def solve_displacements(K_reduced, F_reduced, fixed_dofs, n_nodes):
 def calculate_member_forces(members_df, nodes_df, displacements, loads_df, dof_map):
     """
     Calculate member end forces from displacements
+    Sign convention: Sagging moment positive (tension at bottom)
     
     Returns:
         DataFrame with member forces
@@ -304,19 +312,23 @@ def calculate_member_forces(members_df, nodes_df, displacements, loads_df, dof_m
             [0, 6*E*I/L**2, 2*E*I/L, 0, -6*E*I/L**2, 4*E*I/L]
         ])
         
-        # Local forces
+        # Local forces from stiffness
         f_local = k_local @ u_local
         
         # Get fixed end actions for this member
         FEM_i, FEM_j, FES_i, FES_j = get_member_fem(member_id, loads_df, L)
         
-        # Total member forces
+        # Total member forces with correct sign convention
+        # For moments: Positive = sagging (bottom fiber in tension)
+        # Member forces from stiffness give internal forces
+        # Add fixed end moments with proper signs
+        
         N_i = f_local[0]
-        V_i = f_local[1] - FES_i
-        M_i = f_local[2] - FEM_i
+        V_i = f_local[1] + FES_i  # Shear at node i
+        M_i = f_local[2] + FEM_i  # Moment at node i (sagging positive)
         N_j = f_local[3]
-        V_j = f_local[4] - FES_j
-        M_j = f_local[5] - FEM_j
+        V_j = f_local[4] + FES_j  # Shear at node j
+        M_j = f_local[5] + FEM_j  # Moment at node j (sagging positive)
         
         results.append({
             'Member': member_id,
