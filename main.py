@@ -63,7 +63,7 @@ if 'solved' not in st.session_state:
 
 # Header
 st.markdown('<div class="main-header">🏗️ Beam & Frame Analysis System</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">CEG 410 Group 8- Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">CEG 410 Group 8 - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -201,7 +201,7 @@ with tab1:
         with st.form("support_form"):
             scol1, scol2 = st.columns(2)
             supp_node = scol1.number_input("Node", min_value=1, value=1, step=1, key="supp_node")
-            supp_type = scol2.selectbox("Type", ["Fixed", "Pinned", "Roller"], key="supp_type")
+            supp_type = scol2.selectbox("Type", ["Fixed", "Pinned", "Roller", "Cantilever"], key="supp_type")
             
             scol3, scol4, scol5 = st.columns(3)
             supp_dx = scol3.number_input("Settlement Dx (m)", value=0.0, format="%.6f", key="supp_dx")
@@ -324,7 +324,7 @@ with tab2:
         
         st.divider()
         
-        st.subheader("Structure Preview")
+        st.subheader("Structure Preview with Load Diagram")
         try:
             fig = plot_structure(st.session_state.nodes, st.session_state.members, 
                                 st.session_state.supports, st.session_state.loads)
@@ -972,6 +972,13 @@ with tab5:
             
             As_provide = max(As_req, As_min)
             
+            # Display As required vs As to provide
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("As Required", f"{As_req:.0f} mm²", help="Steel required from moment capacity")
+            with col2:
+                st.metric("As to Provide", f"{As_provide:.0f} mm²", help="Maximum of required and minimum steel")
+            
             st.divider()
             st.subheader("🔩 Bar Arrangement")
             
@@ -1453,7 +1460,6 @@ st.markdown("""
 <div style='text-align: center; color: #666; padding: 20px;'>
     <p><b>CEG 410 - Structural Analysis Project</b></p>
     <p>Direct Stiffness Method | Slope-Deflection Analysis | BS 8110:1997 Design</p>
-    <p>Developed By Okik's</p>
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
