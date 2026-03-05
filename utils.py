@@ -119,7 +119,7 @@ def calculate_fixed_end_actions(members_df, loads_df, dof_map, nodes_df):
             FEM_j = w * L**2 / 12
             # Fixed end shears
             FES_i = -w * L / 2
-            FES_j = -w * L / 2
+            FES_j = w * L / 2
             
         elif load_type == "VDL":
             w1 = load['W1']
@@ -128,7 +128,7 @@ def calculate_fixed_end_actions(members_df, loads_df, dof_map, nodes_df):
             FEM_i = -(w1 * L**2 / 20) * (7 - w2/w1) if w1 != 0 else 0
             FEM_j = (w2 * L**2 / 20) * (7 - w1/w2) if w2 != 0 else 0
             FES_i = -(w1 + w2) * L / 2
-            FES_j = -(w1 + w2) * L / 2
+            FES_j = (w1 + w2) * L / 2
             
         elif load_type == "Point Load":
             P = load['P']
@@ -360,7 +360,7 @@ def get_member_fem(member_id, loads_df, L):
             FEM_i_total += -w * L**2 / 12
             FEM_j_total += w * L**2 / 12
             FES_i_total += -w * L / 2
-            FES_j_total += -w * L / 2
+            FES_j_total += w * L / 2
             
         elif load_type == "VDL":
             w1 = load['W1']
@@ -416,3 +416,4 @@ def calculate_reactions(K_global, displacements, F_fixed, supports_df, nodes_df,
         })
     
     return pd.DataFrame(reactions_list)
+
