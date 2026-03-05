@@ -470,7 +470,7 @@ with tab3:
                         FEM_i_total += -w * L**2 / 12
                         FEM_j_total += w * L**2 / 12
                         FES_i_total += -w * L / 2
-                        FES_j_total += -w * L / 2
+                        FES_j_total += w * L / 2
                         load_descriptions.append(f"UDL: {w:.2f} kN/m")
                         
                     elif load_type == 'VDL':
@@ -479,7 +479,7 @@ with tab3:
                         FEM_i_total += -(w1 * L**2 / 20) * (7 - w2/w1) if w1 != 0 else 0
                         FEM_j_total += (w2 * L**2 / 20) * (7 - w1/w2) if w2 != 0 else 0
                         FES_i_total += -(w1 + w2) * L / 2
-                        FES_j_total += -(w1 + w2) * L / 2
+                        FES_j_total += (w1 + w2) * L / 2
                         load_descriptions.append(f"VDL: {w1:.2f}→{w2:.2f} kN/m")
                         
                     elif load_type == 'Point Load':
@@ -489,7 +489,7 @@ with tab3:
                         FEM_i_total += -P * a * b**2 / L**2
                         FEM_j_total += P * a**2 * b / L**2
                         FES_i_total += -P * b**2 * (3*a + b) / L**3
-                        FES_j_total += -P * a**2 * (a + 3*b) / L**3
+                        FES_j_total += P * a**2 * (a + 3*b) / L**3
                         load_descriptions.append(f"P: {P:.1f}kN@{a:.1f}m")
                         
                     elif load_type == 'Moment':
@@ -1463,3 +1463,4 @@ st.markdown("""
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
+
