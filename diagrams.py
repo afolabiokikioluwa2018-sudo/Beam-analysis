@@ -16,12 +16,13 @@ BMD FORMULA  (derived from FBD, left portion [0, x]):
                         − P·(x−a)·H(x−a)   (Point load — ramp, creates KINK)
                         − (w₁x²/2 + (w₂−w₁)x³/6L)  (VDL)
 
-  Sign: M(x) > 0 → sagging (tension bottom) → plotted BELOW baseline
-        M(x) < 0 → hogging (tension top)    → plotted ABOVE baseline
+  Sign: M(x) > 0 → sagging (tension bottom) → plotted ABOVE baseline
+        M(x) < 0 → hogging (tension top)    → plotted BELOW baseline
 
-  Plotting: y = −M(x) on a normal (non-reversed) axis
-    sagging  M > 0  →  y = −M < 0  →  below zero ✓ (tension face)
-    hogging  M < 0  →  y = −M > 0  →  above zero ✓
+  Plotting convention (standard structural engineering):
+    Plot y = M(x) directly on a NORMAL y-axis:
+      Sagging  M > 0  →  y > 0  →  ABOVE baseline  ✓
+      Hogging  M < 0  →  y < 0  →  BELOW baseline  ✓
 
 KINKS vs SMOOTH CURVES:
   Point load → V has a STEP DISCONTINUITY at x=a (shear jumps by P)
@@ -84,16 +85,6 @@ def _x_array(L, member_loads, n=600):
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CORE FORMULA: V(x) — Shear Force
-#
-#  V(x) = V_i
-#         − w · x                           (UDL, downward positive w)
-#         − P · (x > a)                     (Point load step at a)
-#         − [w₁·x + (w₂−w₁)·x²/(2L)]       (VDL)
-#
-#  The step (x > a) is strict so that:
-#    x < a : load not yet reached, no effect
-#    x = a : we insert a−ε and a+ε so both sides are sampled
-#    x > a : full load applies
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _V(x, V_i, member_loads, L):
@@ -107,22 +98,12 @@ def _V(x, V_i, member_loads, L):
             w1, w2 = float(ld['W1']), float(ld['W2'])
             V -= w1*x + (w2 - w1)*x**2 / (2.0*L)
         elif t == 'Point Load':
-            # Step: full P subtracted for all x strictly after a
             V -= float(ld['P']) * (x > float(ld['a'])).astype(float)
     return V
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CORE FORMULA: M(x) — Bending Moment
-#
-#  M(x) = M_i + V_i · x
-#         − w · x² / 2                      (UDL parabola)
-#         − P · max(x − a, 0)               (Point load ramp — creates kink)
-#         − [w₁x²/2 + (w₂−w₁)x³/(6L)]      (VDL)
-#         + M_applied (if x ≥ a_moment)      (Applied moment — step in M)
-#
-#  Note: same strict > as shear so both sides of kink are sampled.
-#        At x = a exactly: M is CONTINUOUS (no jump), only slope changes.
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _M(x, M_i, V_i, member_loads, L):
@@ -136,7 +117,6 @@ def _M(x, M_i, V_i, member_loads, L):
             w1, w2 = float(ld['W1']), float(ld['W2'])
             M -= w1*x**2/2.0 + (w2 - w1)*x**3/(6.0*L)
         elif t == 'Point Load':
-            # Ramp: P·(x−a) for x > a only (max(x−a,0))
             diff = x - float(ld['a'])
             M   -= float(ld['P']) * np.maximum(diff, 0.0)
         elif t == 'Moment':
@@ -277,12 +257,6 @@ def plot_structure(nodes_df, members_df, supports_df, loads_df):
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  SHEAR FORCE DIAGRAM
-#
-#  Formula:  V(x) = V_i − Σ(load contributions)
-#  Plotted as-is on normal y-axis:
-#    V > 0  →  above baseline  (upward shear on left face)
-#    V < 0  →  below baseline
-#  Step discontinuities at point loads rendered by (x > a) step + triple points.
 # ═══════════════════════════════════════════════════════════════════════════
 
 def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
@@ -358,18 +332,17 @@ def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
 # ═══════════════════════════════════════════════════════════════════════════
 #  BENDING MOMENT DIAGRAM
 #
-#  Formula:  M(x) = M_i + V_i·x − Σ(load contributions)
+#  CORRECTED PLOTTING CONVENTION (standard structural engineering):
 #
-#  Plotting convention (UK/Eurocode — tension face):
-#    Plot  y = −M(x)  on a NORMAL y-axis:
-#      Sagging  M > 0  →  y = −M < 0  →  BELOW baseline  ✓
-#      Hogging  M < 0  →  y = −M > 0  →  ABOVE baseline  ✓
+#  Plot y = M(x) DIRECTLY on normal y-axis:
+#    Sagging  M > 0  →  y > 0  →  ABOVE baseline  ✓  (tension at bottom)
+#    Hogging  M < 0  →  y < 0  →  BELOW baseline  ✓  (tension at top)
 #
-#  Kinks at point loads: M is CONTINUOUS but slope changes.
-#  Captured by triple x-points (a−ε, a, a+ε) around each load.
-#  max(x−a, 0) ramp is used (NOT step) so moment is never discontinuous.
+#  This matches what every structural engineering textbook shows:
+#  a simply-supported beam under gravity load has its sagging peak
+#  appearing as a hump ABOVE the beam centreline.
 #
-#  Hover shows real M value (not negated).
+#  Hover shows the true M value (sagging = positive, hogging = negative).
 # ═══════════════════════════════════════════════════════════════════════════
 
 def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
@@ -386,12 +359,15 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
             V_i    = float(forces['V_i'])
             ml     = loads_df[loads_df['Member']==mid]
 
-            # Compute M(x) — sagging positive
             x      = _x_array(L, ml, n=600)
             M_real = _M(x, M_i, V_i, ml, L)
 
-            # Plot y = −M  so sagging (M>0) → y<0 → below baseline
-            M_plot = -M_real
+            # ── KEY FIX ──────────────────────────────────────────────────
+            # Plot M directly (no negation).
+            #   Sagging M > 0  →  y > 0  →  above baseline  ✓
+            #   Hogging M < 0  →  y < 0  →  below baseline  ✓
+            # ─────────────────────────────────────────────────────────────
+            M_plot = M_real   # was: -M_real  (WRONG — now corrected)
 
             xg  = _to_global(xi, xj, yi, yj, L, x)
             lc  = _lc(idx); fc = _fc(idx)
@@ -416,12 +392,12 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
             # ── Annotations ────────────────────────────────────────────
             ann = {}
 
-            # Peak sagging (largest positive M)
+            # Peak sagging (largest positive M) — appears above baseline
             if M_real.max() > 0.1:
                 i = int(np.argmax(M_real))
                 ann[round(float(xg[i]),3)] = (xg[i], M_plot[i], M_real[i])
 
-            # Peak hogging (most negative M)
+            # Peak hogging (most negative M) — appears below baseline
             if M_real.min() < -0.1:
                 i = int(np.argmin(M_real))
                 ann[round(float(xg[i]),3)] = (xg[i], M_plot[i], M_real[i])
@@ -443,10 +419,12 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
                         ann[k] = (xg[ie], M_plot[ie], M_real[ie])
 
             for _, (ax_, ay_, am_) in ann.items():
+                # Label above the point if sagging (positive), below if hogging (negative)
+                label_offset = 28 if ay_ >= 0 else -28
                 fig.add_annotation(x=ax_, y=ay_,
                     text=f'<b>{am_:.2f} kNm</b>',
                     showarrow=True, arrowhead=2, arrowsize=0.8, arrowwidth=1.5,
-                    ax=0, ay=(-28 if ay_<=0 else 28),
+                    ax=0, ay=label_offset,
                     bgcolor='rgba(255,255,255,0.90)',
                     bordercolor=lc, borderwidth=1.5,
                     font=dict(size=9, color=lc))
@@ -454,38 +432,38 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
         # global zero line
         fig.add_hline(y=0, line_width=2.5, line_color='black')
 
-        # direction labels
-        fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.99,
-            text='↑ Hogging (−ve)',showarrow=False,
-            xanchor='left',yanchor='top',
-            font=dict(size=10,color='#1565C0'),
+        # direction labels — corrected to match new convention
+        fig.add_annotation(xref='paper', yref='paper', x=0.01, y=0.99,
+            text='↑ Sagging (+ve)',
+            showarrow=False, xanchor='left', yanchor='top',
+            font=dict(size=10, color='#C62828'),
             bgcolor='rgba(255,255,255,0.8)')
-        fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.01,
-            text='↓ Sagging (+ve)',showarrow=False,
-            xanchor='left',yanchor='bottom',
-            font=dict(size=10,color='#C62828'),
+        fig.add_annotation(xref='paper', yref='paper', x=0.01, y=0.01,
+            text='↓ Hogging (−ve)',
+            showarrow=False, xanchor='left', yanchor='bottom',
+            font=dict(size=10, color='#1565C0'),
             bgcolor='rgba(255,255,255,0.8)')
 
         fig.update_layout(
             title=dict(
                 text=('Bending Moment Diagram  '
-                      '<span style="color:#C62828">↓ Sagging (+ve)</span>  '
+                      '<span style="color:#C62828">↑ Sagging (+ve)</span>  '
                       '|  '
-                      '<span style="color:#1565C0">↑ Hogging (−ve)</span>'),
+                      '<span style="color:#1565C0">↓ Hogging (−ve)</span>'),
                 font=dict(size=15)),
             xaxis_title='Position (m)',
             yaxis_title='Bending Moment (kNm)',
             hovermode='closest', height=480, showlegend=True,
             plot_bgcolor='#FAFAFA', paper_bgcolor='white',
             yaxis=dict(zeroline=False, autorange=True),
-            legend=dict(orientation='h',yanchor='bottom',y=1.02,
-                        xanchor='right',x=1),
-            margin=dict(l=70,r=40,t=80,b=60))
+            legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                        xanchor='right', x=1),
+            margin=dict(l=70, r=40, t=80, b=60))
         return fig
     except Exception as e:
         fig = go.Figure()
-        fig.add_annotation(text=f'BMD error: {e}',showarrow=False,
-            xref='paper',yref='paper',x=0.5,y=0.5)
+        fig.add_annotation(text=f'BMD error: {e}', showarrow=False,
+            xref='paper', yref='paper', x=0.5, y=0.5)
         return fig
 
 
