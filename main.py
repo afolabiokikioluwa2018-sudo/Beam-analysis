@@ -63,7 +63,7 @@ if 'solved' not in st.session_state:
 
 # Header
 st.markdown('<div class="main-header">🏗️ Beam & Frame Analysis System</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">CEG 410 Group 8 - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">CEG 410 - Unlimited Spans | Multi-Storey Frames | Direct Stiffness Method</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -468,18 +468,18 @@ with tab3:
                     if load_type == 'UDL':
                         w = load['W1']
                         FEM_i_total += -w * L**2 / 12
-                        FEM_j_total += w * L**2 / 12
-                        FES_i_total += -w * L / 2
-                        FES_j_total += w * L / 2
+                        FEM_j_total +=  w * L**2 / 12
+                        FES_i_total +=  w * L / 2
+                        FES_j_total +=  w * L / 2
                         load_descriptions.append(f"UDL: {w:.2f} kN/m")
                         
                     elif load_type == 'VDL':
                         w1 = load['W1']
                         w2 = load['W2']
-                        FEM_i_total += -(w1 * L**2 / 20) * (7 - w2/w1) if w1 != 0 else 0
-                        FEM_j_total += (w2 * L**2 / 20) * (7 - w1/w2) if w2 != 0 else 0
-                        FES_i_total += -(w1 + w2) * L / 2
-                        FES_j_total += (w1 + w2) * L / 2
+                        FEM_i_total += -(7*w1 + 3*w2) * L**2 / 60
+                        FEM_j_total +=  (3*w1 + 7*w2) * L**2 / 60
+                        FES_i_total +=  (7*w1 + 3*w2) * L / 20
+                        FES_j_total +=  (3*w1 + 7*w2) * L / 20
                         load_descriptions.append(f"VDL: {w1:.2f}→{w2:.2f} kN/m")
                         
                     elif load_type == 'Point Load':
@@ -487,16 +487,16 @@ with tab3:
                         a = load['a']
                         b = load['b'] if load['b'] > 0 else L - a
                         FEM_i_total += -P * a * b**2 / L**2
-                        FEM_j_total += P * a**2 * b / L**2
-                        FES_i_total += -P * b**2 * (3*a + b) / L**3
-                        FES_j_total += P * a**2 * (a + 3*b) / L**3
+                        FEM_j_total +=  P * a**2 * b / L**2
+                        FES_i_total +=  P * b**2 * (3*a + b) / L**3
+                        FES_j_total +=  P * a**2 * (a + 3*b) / L**3
                         load_descriptions.append(f"P: {P:.1f}kN@{a:.1f}m")
                         
                     elif load_type == 'Moment':
                         M_load = load['M']
                         a = load['a']
                         FEM_i_total += -M_load * (1 - a/L)
-                        FEM_j_total += M_load * a / L
+                        FEM_j_total +=  M_load * a / L
                         load_descriptions.append(f"M: {M_load:.1f}kNm@{a:.1f}m")
             
             # Combine load descriptions
@@ -559,14 +559,14 @@ with tab3:
                         if load_type == 'UDL':
                             w = load['W1']
                             FEM_i = -w * L**2 / 12
-                            FEM_j = w * L**2 / 12
+                            FEM_j =  w * L**2 / 12
                             load_desc = f"Load {load_num}: UDL {w:.2f} kN/m"
                             
                         elif load_type == 'VDL':
                             w1 = load['W1']
                             w2 = load['W2']
-                            FEM_i = -(w1 * L**2 / 20) * (7 - w2/w1) if w1 != 0 else 0
-                            FEM_j = (w2 * L**2 / 20) * (7 - w1/w2) if w2 != 0 else 0
+                            FEM_i = -(7*w1 + 3*w2) * L**2 / 60
+                            FEM_j =  (3*w1 + 7*w2) * L**2 / 60
                             load_desc = f"Load {load_num}: VDL {w1:.2f}→{w2:.2f} kN/m"
                             
                         elif load_type == 'Point Load':
@@ -574,14 +574,14 @@ with tab3:
                             a = load['a']
                             b = load['b'] if load['b'] > 0 else L - a
                             FEM_i = -P * a * b**2 / L**2
-                            FEM_j = P * a**2 * b / L**2
+                            FEM_j =  P * a**2 * b / L**2
                             load_desc = f"Load {load_num}: Point {P:.1f} kN @ {a:.2f}m"
                             
                         elif load_type == 'Moment':
                             M_load = load['M']
                             a = load['a']
                             FEM_i = -M_load * (1 - a/L)
-                            FEM_j = M_load * a / L
+                            FEM_j =  M_load * a / L
                             load_desc = f"Load {load_num}: Moment {M_load:.1f} kNm @ {a:.2f}m"
                         
                         else:
@@ -1463,4 +1463,3 @@ st.markdown("""
     <p>Made with ❤️ using Streamlit & NumPy</p>
 </div>
 """, unsafe_allow_html=True)
-
