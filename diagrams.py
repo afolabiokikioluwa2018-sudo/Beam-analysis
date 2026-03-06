@@ -1,337 +1,571 @@
 """
-Plotting functions for structure visualization and diagrams.
+diagrams.py — Structural Analysis Visualization
+================================================
+Standard UK/Eurocode structural engineering conventions:
 
-SFD convention : Positive = upward force on LEFT face of section
-                 Diagram plotted with positive VALUES going UPWARD  (normal orientation)
+  BMD : Moments plotted on the TENSION FACE
+        Sagging (M > 0, tension at bottom) → plotted BELOW the beam axis
+        Hogging  (M < 0, tension at top)   → plotted ABOVE the beam axis
+        Implementation: plot (−M) on a normal y-axis
+          sagging  M > 0  →  −M < 0  →  below zero  ✓
+          hogging  M < 0  →  −M > 0  →  above zero  ✓
 
-BMD convention : Positive = SAGGING (tension at bottom fiber)
-                 Diagram plotted with sagging going DOWNWARD (tension-face convention)
-                 Implementation: plot -M(x) on a normal y-axis so that
-                   sagging (M>0) → -M<0 → below baseline  ✓
-                   hogging (M<0) → -M>0 → above baseline  ✓
+  SFD : Positive shear (upward on left face) → plotted ABOVE baseline
+        No axis reversal.
+
+  Point loads create KINKS in the BMD (slope change, moment is continuous).
+  UDL creates PARABOLIC segments.
+  Kinks are captured by dense sampling around every point-load position.
 """
 
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 
-_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-def _color(idx):
-    return _COLORS[idx % len(_COLORS)]
+# ── colour palette (distinct, colourblind-friendly) ───────────────────────
+_MEMBER_COLORS = [
+    ('#1565C0', 'rgba(21,101,192,0.20)'),   # blue
+    ('#C62828', 'rgba(198,40,40,0.20)'),    # red
+    ('#2E7D32', 'rgba(46,125,50,0.20)'),    # green
+    ('#6A1B9A', 'rgba(106,27,154,0.20)'),   # purple
+    ('#E65100', 'rgba(230,81,0,0.20)'),     # orange
+    ('#00695C', 'rgba(0,105,92,0.20)'),     # teal
+    ('#AD1457', 'rgba(173,20,87,0.20)'),    # pink
+]
+
+def _line_color(idx):  return _MEMBER_COLORS[idx % len(_MEMBER_COLORS)][0]
+def _fill_color(idx):  return _MEMBER_COLORS[idx % len(_MEMBER_COLORS)][1]
 
 
-# =========================================================================
-#  STRUCTURE PLOT
-# =========================================================================
+# ══════════════════════════════════════════════════════════════════════════
+#  CORE CALCULATION HELPERS
+# ══════════════════════════════════════════════════════════════════════════
+
+def _sample_x(L, member_loads, n=400):
+    """
+    Build an x-array [0, L] with:
+    • n uniformly spaced points
+    • triple points around every point-load / moment position
+      (x-ε, x, x+ε) so that slope-change kinks are rendered sharply.
+    """
+    xs = list(np.linspace(0.0, L, n))
+    eps = L * 1e-6
+    for _, ld in member_loads.iterrows():
+        if ld['Type'] in ('Point Load', 'Moment'):
+            a = float(ld['a'])
+            if eps < a < L - eps:
+                xs += [a - eps, a, a + eps]
+    xs = np.array(sorted(set(np.clip(xs, 0.0, L))))
+    return xs
+
+
+def _shear(x_arr, V_i, member_loads, L):
+    """V(x) — positive = upward on left face."""
+    V = np.full(len(x_arr), V_i)
+    for _, ld in member_loads.iterrows():
+        t = ld['Type']
+        if t == 'UDL':
+            w = float(ld['W1'])
+            V -= w * x_arr
+        elif t == 'VDL':
+            w1, w2 = float(ld['W1']), float(ld['W2'])
+            V -= w1 * x_arr + (w2 - w1) * x_arr**2 / (2.0 * L)
+        elif t == 'Point Load':
+            a = float(ld['a'])
+            P = float(ld['P'])
+            # step function: strictly after load position
+            V -= P * (x_arr > a).astype(float)
+    return V
+
+
+def _moment(x_arr, M_i, V_i, member_loads, L):
+    """M(x) — sagging = positive."""
+    M = M_i + V_i * x_arr
+    for _, ld in member_loads.iterrows():
+        t = ld['Type']
+        if t == 'UDL':
+            w = float(ld['W1'])
+            M -= w * x_arr**2 / 2.0
+        elif t == 'VDL':
+            w1, w2 = float(ld['W1']), float(ld['W2'])
+            M -= w1 * x_arr**2 / 2.0 + (w2 - w1) * x_arr**3 / (6.0 * L)
+        elif t == 'Point Load':
+            a = float(ld['a'])
+            P = float(ld['P'])
+            # ramp after load position — creates kink (slope change)
+            mask = x_arr > a
+            M[mask] -= P * (x_arr[mask] - a)
+        elif t == 'Moment':
+            a = float(ld['a'])
+            M_val = float(ld['M'])
+            M[x_arr >= a] += M_val
+    return M
+
+
+def _geom(member, nodes_df):
+    ni = int(member['Node_I']); nj = int(member['Node_J'])
+    xi = float(nodes_df[nodes_df['Node']==ni]['X'].values[0])
+    yi = float(nodes_df[nodes_df['Node']==ni]['Y'].values[0])
+    xj = float(nodes_df[nodes_df['Node']==nj]['X'].values[0])
+    yj = float(nodes_df[nodes_df['Node']==nj]['Y'].values[0])
+    L  = float(np.sqrt((xj-xi)**2 + (yj-yi)**2))
+    return xi, yi, xj, yj, L
+
+
+def _to_global_x(xi, xj, yi, yj, L, x_local):
+    """Map local x-coordinate to global X for horizontal/near-horizontal members."""
+    if abs(xj - xi) >= abs(yj - yi):
+        return xi + x_local * (xj - xi) / L
+    else:
+        return np.full(len(x_local), (xi + xj) / 2.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  STRUCTURE DIAGRAM
+# ══════════════════════════════════════════════════════════════════════════
 
 def plot_structure(nodes_df, members_df, supports_df, loads_df):
     fig = go.Figure()
-    x_range = float(nodes_df['X'].max() - nodes_df['X'].min()) if len(nodes_df) > 1 else 1.0
-    sym = max(0.05 * x_range, 0.15)
-    arrow_h = max(0.04 * x_range, 0.5)
 
-    for _, member in members_df.iterrows():
-        ni = int(member['Node_I']); nj = int(member['Node_J'])
-        xi = nodes_df[nodes_df['Node']==ni]['X'].values[0]
-        yi = nodes_df[nodes_df['Node']==ni]['Y'].values[0]
-        xj = nodes_df[nodes_df['Node']==nj]['X'].values[0]
-        yj = nodes_df[nodes_df['Node']==nj]['Y'].values[0]
+    xspan = float(nodes_df['X'].max() - nodes_df['X'].min()) if len(nodes_df) > 1 else 1.0
+    xspan = max(xspan, 1.0)
+    sym   = max(0.035 * xspan, 0.12)
+    arh   = max(0.055 * xspan, 0.40)
+
+    # ── members ──────────────────────────────────────────────────────────
+    for _, mb in members_df.iterrows():
+        ni = int(mb['Node_I']); nj = int(mb['Node_J'])
+        xi = float(nodes_df[nodes_df['Node']==ni]['X'].values[0])
+        yi = float(nodes_df[nodes_df['Node']==ni]['Y'].values[0])
+        xj = float(nodes_df[nodes_df['Node']==nj]['X'].values[0])
+        yj = float(nodes_df[nodes_df['Node']==nj]['Y'].values[0])
         fig.add_trace(go.Scatter(x=[xi,xj], y=[yi,yj], mode='lines+text',
-            line=dict(color='#2196F3', width=5),
-            text=[f'  M{int(member["Member"])}',''], textposition='top center',
-            showlegend=False))
+            line=dict(color='#1565C0', width=6),
+            text=[f'  M{int(mb["Member"])}', ''],
+            textposition='top center',
+            textfont=dict(size=12, color='#1565C0'),
+            showlegend=False, hoverinfo='skip'))
 
-    fig.add_trace(go.Scatter(x=nodes_df['X'], y=nodes_df['Y'],
+    # ── nodes ─────────────────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=nodes_df['X'], y=nodes_df['Y'],
         mode='markers+text',
-        marker=dict(size=12, color='#F44336', symbol='circle'),
+        marker=dict(size=12, color='#C62828', symbol='circle',
+                    line=dict(color='white', width=2)),
         text=[f'  N{int(n)}' for n in nodes_df['Node']],
-        textposition='top right', showlegend=False))
+        textposition='top right',
+        textfont=dict(size=11, color='#C62828'),
+        showlegend=False, name='Nodes'))
 
-    for _, support in supports_df.iterrows():
-        node = int(support['Node'])
-        sx = nodes_df[nodes_df['Node']==node]['X'].values[0]
-        sy = nodes_df[nodes_df['Node']==node]['Y'].values[0]
-        stype = support['Type']
-        if stype in ('Fixed','Cantilever'):
-            fig.add_trace(go.Scatter(x=[sx], y=[sy-sym*0.6], mode='markers',
-                marker=dict(size=22, color='#212121', symbol='square'), showlegend=False))
+    # ── supports ──────────────────────────────────────────────────────────
+    for _, sup in supports_df.iterrows():
+        node = int(sup['Node']); stype = sup['Type']
+        sx = float(nodes_df[nodes_df['Node']==node]['X'].values[0])
+        sy = float(nodes_df[nodes_df['Node']==node]['Y'].values[0])
+
+        if stype in ('Fixed', 'Cantilever'):
+            for k in range(6):
+                xo = sx - sym*1.2 + k * sym*0.48
+                fig.add_trace(go.Scatter(
+                    x=[xo, xo - sym*0.3], y=[sy, sy - sym*0.8],
+                    mode='lines', line=dict(color='#424242', width=2),
+                    showlegend=False, hoverinfo='skip'))
+            fig.add_trace(go.Scatter(
+                x=[sx - sym*1.2, sx + sym*1.2], y=[sy, sy],
+                mode='lines', line=dict(color='#424242', width=4),
+                showlegend=False, hoverinfo='skip'))
+
         elif stype == 'Pinned':
             fig.add_trace(go.Scatter(
-                x=[sx-sym, sx, sx+sym, sx-sym],
-                y=[sy-sym*1.2, sy, sy-sym*1.2, sy-sym*1.2],
-                fill='toself', fillcolor='#4CAF50', mode='lines',
-                line=dict(color='#4CAF50',width=2), showlegend=False))
+                x=[sx - sym, sx, sx + sym, sx - sym],
+                y=[sy - sym*1.5, sy, sy - sym*1.5, sy - sym*1.5],
+                fill='toself', fillcolor='#43A047',
+                mode='lines', line=dict(color='#2E7D32', width=2),
+                showlegend=False, hoverinfo='skip'))
+            # ground line
+            fig.add_trace(go.Scatter(
+                x=[sx - sym*1.2, sx + sym*1.2],
+                y=[sy - sym*1.5, sy - sym*1.5],
+                mode='lines', line=dict(color='#2E7D32', width=3),
+                showlegend=False, hoverinfo='skip'))
+
         elif stype == 'Roller':
             fig.add_trace(go.Scatter(
-                x=[sx-sym, sx, sx+sym, sx-sym],
-                y=[sy-sym, sy, sy-sym, sy-sym],
-                fill='toself', fillcolor='#FF9800', mode='lines',
-                line=dict(color='#FF9800',width=2), showlegend=False))
-            fig.add_trace(go.Scatter(x=[sx-sym*0.5, sx+sym*0.5],
-                y=[sy-sym*1.4, sy-sym*1.4], mode='markers',
-                marker=dict(size=8, color='#FF9800', symbol='circle'), showlegend=False))
+                x=[sx - sym, sx, sx + sym, sx - sym],
+                y=[sy - sym, sy, sy - sym, sy - sym],
+                fill='toself', fillcolor='#FB8C00',
+                mode='lines', line=dict(color='#E65100', width=2),
+                showlegend=False, hoverinfo='skip'))
+            # rollers
+            for xo in [sx - sym*0.5, sx, sx + sym*0.5]:
+                fig.add_trace(go.Scatter(x=[xo], y=[sy - sym*1.35],
+                    mode='markers',
+                    marker=dict(size=7, color='#E65100',
+                                symbol='circle',
+                                line=dict(color='#BF360C', width=1)),
+                    showlegend=False, hoverinfo='skip'))
+            fig.add_trace(go.Scatter(
+                x=[sx - sym*1.2, sx + sym*1.2],
+                y=[sy - sym*1.7, sy - sym*1.7],
+                mode='lines', line=dict(color='#E65100', width=3),
+                showlegend=False, hoverinfo='skip'))
 
-    for _, load in loads_df.iterrows():
-        mid = int(load['Member'])
-        member = members_df[members_df['Member']==mid].iloc[0]
-        ni = int(member['Node_I']); nj = int(member['Node_J'])
-        xi = nodes_df[nodes_df['Node']==ni]['X'].values[0]
-        yi = nodes_df[nodes_df['Node']==ni]['Y'].values[0]
-        xj = nodes_df[nodes_df['Node']==nj]['X'].values[0]
-        yj = nodes_df[nodes_df['Node']==nj]['Y'].values[0]
-        L = np.sqrt((xj-xi)**2+(yj-yi)**2)
+    # ── loads ─────────────────────────────────────────────────────────────
+    for _, ld in loads_df.iterrows():
+        mid    = int(ld['Member'])
+        mb_row = members_df[members_df['Member']==mid].iloc[0]
+        ni = int(mb_row['Node_I']); nj = int(mb_row['Node_J'])
+        xi = float(nodes_df[nodes_df['Node']==ni]['X'].values[0])
+        yi = float(nodes_df[nodes_df['Node']==ni]['Y'].values[0])
+        xj = float(nodes_df[nodes_df['Node']==nj]['X'].values[0])
+        yj = float(nodes_df[nodes_df['Node']==nj]['Y'].values[0])
+        L  = float(np.sqrt((xj-xi)**2 + (yj-yi)**2))
 
-        if load['Type'] == 'UDL':
-            w = load['W1']
-            n_arr = max(5, min(15, int(L*3)))
-            al = -arrow_h if w > 0 else arrow_h
+        if ld['Type'] == 'UDL':
+            w = float(ld['W1'])
+            n_arr = max(5, min(15, int(L * 2.5)))
             for k in range(n_arr):
-                t = k/(n_arr-1)
-                xa = xi+t*(xj-xi); ya = yi+t*(yj-yi)
-                fig.add_annotation(x=xa, y=ya, ax=xa, ay=ya-al,
+                t = k / (n_arr - 1)
+                xa = xi + t*(xj-xi); ya = yi + t*(yj-yi)
+                fig.add_annotation(x=xa, y=ya, ax=xa, ay=ya + arh,
                     xref='x', yref='y', axref='x', ayref='y',
                     showarrow=True, arrowhead=2, arrowsize=1.2,
-                    arrowwidth=2, arrowcolor='#9C27B0')
-            fig.add_annotation(x=(xi+xj)/2, y=(yi+yj)/2+arrow_h*1.5,
-                text=f'UDL: {w:.1f} kN/m', showarrow=False,
-                font=dict(size=11, color='#9C27B0'),
-                bgcolor='white', bordercolor='#9C27B0', borderwidth=1)
+                    arrowwidth=2, arrowcolor='#7B1FA2')
+            xm = (xi+xj)/2; ym = (yi+yj)/2
+            fig.add_annotation(x=xm, y=ym + arh*1.8,
+                text=f'<b>w = {w:.1f} kN/m</b>', showarrow=False,
+                font=dict(size=11, color='#7B1FA2'),
+                bgcolor='rgba(255,255,255,0.9)',
+                bordercolor='#7B1FA2', borderwidth=1.5)
 
-        elif load['Type'] == 'Point Load':
-            P = load['P']; a = load['a']
-            t = a/L if L>0 else 0
-            xa = xi+t*(xj-xi); ya = yi+t*(yj-yi)
-            al = -arrow_h*1.5 if P>0 else arrow_h*1.5
-            fig.add_annotation(x=xa, y=ya, ax=xa, ay=ya-al,
+        elif ld['Type'] == 'Point Load':
+            P = float(ld['P']); a = float(ld['a'])
+            t = a/L if L > 0 else 0
+            xa = xi + t*(xj-xi); ya = yi + t*(yj-yi)
+            fig.add_annotation(x=xa, y=ya, ax=xa, ay=ya + arh*2.0,
                 xref='x', yref='y', axref='x', ayref='y',
-                text=f'{P:.0f} kN', showarrow=True,
-                arrowhead=2, arrowsize=1.5, arrowwidth=4, arrowcolor='#F44336',
-                font=dict(size=11, color='#F44336'),
-                bgcolor='white', bordercolor='#F44336', borderwidth=1)
+                text=f'<b>{P:.0f} kN</b>',
+                showarrow=True, arrowhead=3, arrowsize=1.5,
+                arrowwidth=3, arrowcolor='#C62828',
+                font=dict(size=11, color='#C62828'),
+                bgcolor='rgba(255,255,255,0.9)',
+                bordercolor='#C62828', borderwidth=1.5,
+                yanchor='bottom')
 
-    fig.update_layout(title='Structural Configuration',
+        elif ld['Type'] == 'VDL':
+            w1 = float(ld['W1']); w2 = float(ld['W2'])
+            for k in range(8):
+                t  = k / 7
+                xa = xi + t*(xj-xi); ya = yi + t*(yj-yi)
+                wt = w1 + (w2-w1)*t
+                al = arh * max(0.3, abs(wt)/max(abs(w1),abs(w2),1e-6))
+                fig.add_annotation(x=xa, y=ya, ax=xa, ay=ya + al,
+                    xref='x', yref='y', axref='x', ayref='y',
+                    showarrow=True, arrowhead=2, arrowsize=1.0,
+                    arrowwidth=2, arrowcolor='#7B1FA2')
+            fig.add_annotation(x=(xi+xj)/2, y=(yi+yj)/2 + arh*1.8,
+                text=f'<b>VDL {w1:.1f}→{w2:.1f} kN/m</b>', showarrow=False,
+                font=dict(size=11, color='#7B1FA2'),
+                bgcolor='rgba(255,255,255,0.9)',
+                bordercolor='#7B1FA2', borderwidth=1.5)
+
+    fig.update_layout(
+        title=dict(text='Structural Configuration', font=dict(size=16)),
         xaxis_title='X (m)', yaxis_title='Y (m)',
-        showlegend=False, hovermode='closest', height=500,
-        yaxis=dict(scaleanchor='x', scaleratio=1), plot_bgcolor='#f8f9fa')
+        showlegend=False, hovermode='closest', height=480,
+        yaxis=dict(scaleanchor='x', scaleratio=1),
+        plot_bgcolor='#FAFAFA', paper_bgcolor='white',
+        margin=dict(l=60, r=40, t=60, b=60))
     return fig
 
 
-# =========================================================================
+# ══════════════════════════════════════════════════════════════════════════
 #  SHEAR FORCE DIAGRAM
-#  V(x) = V_i - cumulative load from 0 to x
-#  Positive shear → plots ABOVE baseline (upward)   NO axis flip needed
-# =========================================================================
+# ══════════════════════════════════════════════════════════════════════════
 
 def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
+    """
+    SFD — standard orientation:
+      Positive shear (upward on left face) → ABOVE baseline
+      Negative shear                        → BELOW baseline
+    """
     fig = go.Figure()
     if len(members_df) == 0:
-        fig.add_annotation(text='No members to plot', showarrow=False)
         return fig
 
     for idx, member in members_df.iterrows():
         mid = int(member['Member'])
-        ni  = int(member['Node_I']); nj = int(member['Node_J'])
-        xi = nodes_df[nodes_df['Node']==ni]['X'].values[0]
-        yi = nodes_df[nodes_df['Node']==ni]['Y'].values[0]
-        xj = nodes_df[nodes_df['Node']==nj]['X'].values[0]
-        yj = nodes_df[nodes_df['Node']==nj]['Y'].values[0]
-        L  = np.sqrt((xj-xi)**2+(yj-yi)**2)
+        xi, yi, xj, yj, L = _geom(member, nodes_df)
 
         forces = member_forces_df[member_forces_df['Member']==mid].iloc[0]
         V_i    = float(forces['V_i'])
         member_loads = loads_df[loads_df['Member']==mid]
 
-        n_pts   = 300
-        x_local = np.linspace(0, L, n_pts)
-        V       = np.zeros(n_pts)
+        x_local = _sample_x(L, member_loads)
+        V       = _shear(x_local, V_i, member_loads, L)
+        x_plot  = _to_global_x(xi, xj, yi, yj, L, x_local)
 
-        for k, x in enumerate(x_local):
-            Vx = V_i
-            for _, ld in member_loads.iterrows():
-                if ld['Type'] == 'UDL':
-                    Vx -= ld['W1'] * x
-                elif ld['Type'] == 'VDL':
-                    w1=ld['W1']; w2=ld['W2']
-                    Vx -= (w1*x + (w2-w1)*x**2/(2*L))
-                elif ld['Type'] == 'Point Load':
-                    if x >= ld['a']:
-                        Vx -= ld['P']
-            V[k] = Vx
+        lc = _line_color(idx)
+        fc = _fill_color(idx)
 
-        if abs(xj-xi) >= abs(yj-yi):
-            x_plot = xi + x_local*(xj-xi)/L
-        else:
-            x_plot = np.full(n_pts, (xi+xj)/2)
+        # Filled area
+        fig.add_trace(go.Scatter(
+            x=x_plot, y=V,
+            mode='lines',
+            line=dict(width=2.5, color=lc),
+            fill='tozeroy',
+            fillcolor=fc,
+            name=f'Member {mid}',
+            customdata=np.column_stack([x_local, V]),
+            hovertemplate='x = %{customdata[0]:.3f} m<br>'
+                          'V = %{customdata[1]:.3f} kN<extra>M' + str(mid) + '</extra>'))
 
-        color = _color(idx)
-        fig.add_trace(go.Scatter(x=x_plot, y=V, mode='lines',
-            line=dict(width=2.5, color=color),
-            name=f'Member {mid}', fill='tozeroy',
-            fillcolor=color, opacity=0.25,
-            customdata=V,
-            hovertemplate='x=%{x:.2f} m<br>V=%{customdata:.3f} kN<extra>M' + str(mid) + '</extra>'))
-
-        fig.add_trace(go.Scatter(x=x_plot, y=np.zeros(n_pts), mode='lines',
-            line=dict(color='black', width=1.5, dash='dash'),
+        # Zero baseline
+        fig.add_trace(go.Scatter(
+            x=[x_plot[0], x_plot[-1]], y=[0, 0],
+            mode='lines', line=dict(color='black', width=1.5, dash='dot'),
             showlegend=False, hoverinfo='skip'))
 
-        annotated = {}
-        for ax_, av_ in [(x_plot[0],V[0]),(x_plot[-1],V[-1]),
-                         (x_plot[np.argmax(V)],V.max()),
-                         (x_plot[np.argmin(V)],V.min())]:
-            key = round(float(ax_), 2)
-            if key not in annotated and abs(av_) > 1e-3:
-                annotated[key] = True
-                fig.add_annotation(x=ax_, y=av_,
-                    text=f'{av_:.2f} kN',
-                    showarrow=True, arrowhead=2, arrowsize=0.8,
-                    bgcolor='white', bordercolor=color,
-                    font=dict(size=9, color=color), ax=0, ay=-25)
+        # Annotate start, end, max, min
+        key_pts = {
+            round(float(x_plot[0]),  4): (x_plot[0],  V[0]),
+            round(float(x_plot[-1]), 4): (x_plot[-1], V[-1]),
+            round(float(x_plot[int(np.argmax(V))]), 4): (x_plot[int(np.argmax(V))], V.max()),
+            round(float(x_plot[int(np.argmin(V))]), 4): (x_plot[int(np.argmin(V))], V.min()),
+        }
+        for _, (ax_, av_) in key_pts.items():
+            if abs(av_) > 0.05:
+                fig.add_annotation(
+                    x=ax_, y=av_,
+                    text=f'<b>{av_:.2f} kN</b>',
+                    showarrow=True, arrowhead=2, arrowsize=0.8, arrowwidth=1.5,
+                    ax=0, ay=(-25 if av_ >= 0 else 25),
+                    bgcolor='rgba(255,255,255,0.85)',
+                    bordercolor=lc, borderwidth=1.5,
+                    font=dict(size=9, color=lc))
 
+    fig.add_hline(y=0, line_width=2, line_color='black')
     fig.update_layout(
-        title='Shear Force Diagram',
+        title=dict(text='Shear Force Diagram', font=dict(size=16)),
         xaxis_title='Position (m)',
         yaxis_title='Shear Force (kN)',
-        hovermode='closest', height=450, showlegend=True,
-        yaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='black'),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
+        hovermode='closest', height=420, showlegend=True,
+        plot_bgcolor='#FAFAFA', paper_bgcolor='white',
+        yaxis=dict(zeroline=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                    xanchor='right', x=1),
+        margin=dict(l=70, r=40, t=70, b=60))
     return fig
 
 
-# =========================================================================
+# ══════════════════════════════════════════════════════════════════════════
 #  BENDING MOMENT DIAGRAM
 #
-#  KEY: We plot  −M(x)  on a NORMAL (non-reversed) y-axis.
-#       Sagging  M > 0  →  −M < 0  →  below baseline  ✓  (tension face)
-#       Hogging  M < 0  →  −M > 0  →  above baseline  ✓
-#       Hover tooltip shows the REAL M value (not negated).
-# =========================================================================
+#  Engineering convention (BS 8110 / Eurocode / Hibbeler):
+#    Sagging (M > 0, tension bottom) → drawn BELOW the beam axis
+#    Hogging  (M < 0, tension top)   → drawn ABOVE the beam axis
+#
+#  Implementation:
+#    Plot  y = −M(x)  on a NORMAL (non-reversed) y-axis.
+#      Sagging  M > 0  →  y = −M < 0  →  below zero  ✓
+#      Hogging  M < 0  →  y = −M > 0  →  above zero  ✓
+#
+#  Point loads cause a KINK (slope change) in the BMD — captured by
+#  inserting triple sample points around every point-load position.
+#  UDL produces a PARABOLA — captured by dense uniform sampling.
+# ══════════════════════════════════════════════════════════════════════════
 
 def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
     fig = go.Figure()
     if len(members_df) == 0:
-        fig.add_annotation(text='No members to plot', showarrow=False)
         return fig
 
     for idx, member in members_df.iterrows():
         mid = int(member['Member'])
-        ni  = int(member['Node_I']); nj = int(member['Node_J'])
-        xi = nodes_df[nodes_df['Node']==ni]['X'].values[0]
-        yi = nodes_df[nodes_df['Node']==ni]['Y'].values[0]
-        xj = nodes_df[nodes_df['Node']==nj]['X'].values[0]
-        yj = nodes_df[nodes_df['Node']==nj]['Y'].values[0]
-        L  = np.sqrt((xj-xi)**2+(yj-yi)**2)
+        xi, yi, xj, yj, L = _geom(member, nodes_df)
 
         forces = member_forces_df[member_forces_df['Member']==mid].iloc[0]
         M_i    = float(forces['M_i'])
         V_i    = float(forces['V_i'])
         member_loads = loads_df[loads_df['Member']==mid]
 
-        n_pts   = 300
-        x_local = np.linspace(0, L, n_pts)
-        M       = np.zeros(n_pts)
+        # ── Build M(x) array with kinks at point-load positions ──────────
+        x_local = _sample_x(L, member_loads, n=500)
+        M_real  = _moment(x_local, M_i, V_i, member_loads, L)
 
-        for k, x in enumerate(x_local):
-            Mx = M_i + V_i*x
-            for _, ld in member_loads.iterrows():
-                if ld['Type'] == 'UDL':
-                    Mx -= ld['W1']*x**2/2
-                elif ld['Type'] == 'VDL':
-                    w1=ld['W1']; w2=ld['W2']
-                    Mx -= (w1*x**2/2 + (w2-w1)*x**3/(6*L))
-                elif ld['Type'] == 'Point Load':
-                    if x >= ld['a']:
-                        Mx -= ld['P']*(x-ld['a'])
-                elif ld['Type'] == 'Moment':
-                    if x >= ld['a']:
-                        Mx += ld['M']
-            M[k] = Mx
+        # ── Negate for plotting (sagging below, hogging above) ────────────
+        M_plot  = -M_real
 
-        # ── NEGATE so sagging plots BELOW baseline ────────────────────────
-        M_plot = -M
+        x_plot  = _to_global_x(xi, xj, yi, yj, L, x_local)
 
-        if abs(xj-xi) >= abs(yj-yi):
-            x_plot = xi + x_local*(xj-xi)/L
-        else:
-            x_plot = np.full(n_pts, (xi+xj)/2)
+        lc = _line_color(idx)
+        fc = _fill_color(idx)
 
-        color = _color(idx)
-        fig.add_trace(go.Scatter(x=x_plot, y=M_plot, mode='lines',
-            line=dict(width=2.5, color=color),
-            name=f'Member {mid}', fill='tozeroy',
-            fillcolor=color, opacity=0.25,
-            customdata=M,
-            hovertemplate='x=%{x:.2f} m<br>M=%{customdata:.3f} kNm<extra>M' + str(mid) + '</extra>'))
+        # ── Separate positive and negative regions for correct fill ───────
+        # Split into segments where M_plot > 0 (hogging, above) and < 0 (sagging, below)
+        # Use a single trace with fill='tozeroy' — Plotly handles the split automatically
+        fig.add_trace(go.Scatter(
+            x=x_plot,
+            y=M_plot,
+            mode='lines',
+            line=dict(width=2.5, color=lc),
+            fill='tozeroy',
+            fillcolor=fc,
+            name=f'Member {mid}',
+            customdata=np.column_stack([x_local, M_real]),
+            hovertemplate='x = %{customdata[0]:.3f} m<br>'
+                          'M = %{customdata[1]:.3f} kNm<extra>M' + str(mid) + '</extra>'))
 
-        fig.add_trace(go.Scatter(x=x_plot, y=np.zeros(n_pts), mode='lines',
-            line=dict(color='black', width=1.5, dash='dash'),
+        # ── Zero baseline (beam axis) ─────────────────────────────────────
+        fig.add_trace(go.Scatter(
+            x=[x_plot[0], x_plot[-1]], y=[0.0, 0.0],
+            mode='lines',
+            line=dict(color='black', width=2, dash='solid'),
             showlegend=False, hoverinfo='skip'))
 
-        # Peak annotation (show real M value)
-        peak_idx = int(np.argmax(np.abs(M)))
-        if abs(M[peak_idx]) > 0.1:
-            fig.add_annotation(x=x_plot[peak_idx], y=M_plot[peak_idx],
-                text=f'{M[peak_idx]:.2f} kNm',
-                showarrow=True, arrowhead=2,
-                bgcolor='white', bordercolor=color,
-                font=dict(size=9, color=color), ax=0, ay=-30)
+        # ── Annotate key moments ──────────────────────────────────────────
+        # Find: max sagging (most positive M), max hogging (most negative M),
+        # and kink values at each point-load location
+        annotations = {}
 
-        # End moment annotations
-        for ax_, am_, amp_ in [(x_plot[0],M[0],M_plot[0]),(x_plot[-1],M[-1],M_plot[-1])]:
-            if abs(am_) > 0.1:
-                fig.add_annotation(x=ax_, y=amp_,
-                    text=f'{am_:.2f} kNm',
-                    showarrow=True, arrowhead=2,
-                    bgcolor='white', bordercolor=color,
-                    font=dict(size=9, color=color), ax=0, ay=25)
+        # Peak sagging
+        if M_real.max() > 0.1:
+            i_peak = int(np.argmax(M_real))
+            annotations[round(float(x_plot[i_peak]),3)] = (
+                x_plot[i_peak], M_plot[i_peak], M_real[i_peak])
 
+        # Peak hogging
+        if M_real.min() < -0.1:
+            i_peak = int(np.argmin(M_real))
+            annotations[round(float(x_plot[i_peak]),3)] = (
+                x_plot[i_peak], M_plot[i_peak], M_real[i_peak])
+
+        # Values at point-load kink positions
+        for _, ld in member_loads.iterrows():
+            if ld['Type'] == 'Point Load':
+                a_pos = float(ld['a'])
+                # find index closest to a_pos
+                i_k = int(np.argmin(np.abs(x_local - a_pos)))
+                key = round(float(x_plot[i_k]), 3)
+                if key not in annotations and abs(M_real[i_k]) > 0.1:
+                    annotations[key] = (x_plot[i_k], M_plot[i_k], M_real[i_k])
+
+        # End values
+        for i_e, ay_off in [(0, 20), (-1, 20)]:
+            if abs(M_real[i_e]) > 0.1:
+                key = round(float(x_plot[i_e]), 3)
+                if key not in annotations:
+                    annotations[key] = (x_plot[i_e], M_plot[i_e], M_real[i_e])
+
+        for _, (ax_, ay_plot, am_real) in annotations.items():
+            ay_offset = -28 if ay_plot <= 0 else 28
+            fig.add_annotation(
+                x=ax_, y=ay_plot,
+                text=f'<b>{am_real:.2f} kNm</b>',
+                showarrow=True, arrowhead=2, arrowsize=0.8, arrowwidth=1.5,
+                ax=0, ay=ay_offset,
+                bgcolor='rgba(255,255,255,0.90)',
+                bordercolor=lc, borderwidth=1.5,
+                font=dict(size=9, color=lc))
+
+    # ── Axis zero line (beam reference) ───────────────────────────────────
+    fig.add_hline(y=0, line_width=2.5, line_color='black')
+
+    # ── Y-axis labels to explain convention ───────────────────────────────
     fig.update_layout(
-        title='Bending Moment Diagram  (Sagging +ve — plotted on tension face)',
+        title=dict(
+            text='Bending Moment Diagram  '
+                 '<span style="color:#C62828">(↓ Sagging +ve)</span>  '
+                 '<span style="color:#1565C0">(↑ Hogging −ve)</span>',
+            font=dict(size=15)),
         xaxis_title='Position (m)',
-        yaxis_title='Bending Moment (kNm)  [↓ Sagging | ↑ Hogging]',
-        hovermode='closest', height=450, showlegend=True,
-        yaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='black'),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
+        yaxis_title='Bending Moment (kNm)',
+        hovermode='closest', height=480, showlegend=True,
+        plot_bgcolor='#FAFAFA', paper_bgcolor='white',
+        # NO axis reversal — we plot -M so normal axis gives correct convention
+        yaxis=dict(
+            zeroline=False,
+            # Annotate which direction is sagging/hogging via ticksuffix trick:
+            autorange=True,
+        ),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                    xanchor='right', x=1),
+        margin=dict(l=70, r=40, t=80, b=60))
+
+    # Add sagging/hogging direction labels on y-axis
+    fig.add_annotation(
+        x=0, y=0, xref='paper', yref='paper',
+        text='← Hogging (−ve)',
+        showarrow=False, xanchor='left', yanchor='top',
+        font=dict(size=10, color='#1565C0'),
+        bgcolor='rgba(255,255,255,0.7)')
+    fig.add_annotation(
+        x=0, y=0, xref='paper', yref='paper',
+        text='← Sagging (+ve)',
+        showarrow=False, xanchor='left', yanchor='bottom',
+        font=dict(size=10, color='#C62828'),
+        bgcolor='rgba(255,255,255,0.7)')
+
     return fig
 
 
-# =========================================================================
+# ══════════════════════════════════════════════════════════════════════════
 #  DEFLECTION DIAGRAM
-# =========================================================================
+# ══════════════════════════════════════════════════════════════════════════
 
 def plot_deflection(members_df, nodes_df, displacements):
     fig = go.Figure()
-    max_disp = float(np.max(np.abs(displacements))) if np.max(np.abs(displacements)) > 0 else 1e-6
-    x_range  = float(nodes_df['X'].max()-nodes_df['X'].min()) if len(nodes_df)>1 else 1.0
-    scale    = (x_range*0.05)/max_disp if max_disp>0 else 100
-    scale    = max(10, min(500, round(scale/10)*10))
 
-    for idx, member in members_df.iterrows():
-        ni=int(member['Node_I']); nj=int(member['Node_J'])
-        xi=nodes_df[nodes_df['Node']==ni]['X'].values[0]
-        yi=nodes_df[nodes_df['Node']==ni]['Y'].values[0]
-        xj=nodes_df[nodes_df['Node']==nj]['X'].values[0]
-        yj=nodes_df[nodes_df['Node']==nj]['Y'].values[0]
-        fig.add_trace(go.Scatter(x=[xi,xj], y=[yi,yj], mode='lines',
-            line=dict(color='lightgray',width=2,dash='dash'),
-            name='Original' if idx==0 else '', showlegend=(idx==0)))
+    max_disp = float(np.max(np.abs(displacements)))
+    if max_disp < 1e-12:
+        max_disp = 1e-12
+    xspan = float(nodes_df['X'].max() - nodes_df['X'].min()) if len(nodes_df) > 1 else 1.0
+    scale = max(10, min(1000, round((xspan * 0.05) / max_disp / 10) * 10))
 
-    for idx, member in members_df.iterrows():
-        ni=int(member['Node_I']); nj=int(member['Node_J'])
-        xi=nodes_df[nodes_df['Node']==ni]['X'].values[0]
-        yi=nodes_df[nodes_df['Node']==ni]['Y'].values[0]
-        xj=nodes_df[nodes_df['Node']==nj]['X'].values[0]
-        yj=nodes_df[nodes_df['Node']==nj]['Y'].values[0]
-        dxi=displacements[(ni-1)*3]*scale; dyi=displacements[(ni-1)*3+1]*scale
-        dxj=displacements[(nj-1)*3]*scale; dyj=displacements[(nj-1)*3+1]*scale
-        fig.add_trace(go.Scatter(x=[xi+dxi,xj+dxj], y=[yi+dyi,yj+dyj], mode='lines',
-            line=dict(color='#F44336',width=3),
-            name='Deflected' if idx==0 else '', showlegend=(idx==0)))
+    # Original (grey dashed)
+    shown_orig = False
+    for _, mb in members_df.iterrows():
+        ni = int(mb['Node_I']); nj = int(mb['Node_J'])
+        xi = float(nodes_df[nodes_df['Node']==ni]['X'].values[0])
+        yi = float(nodes_df[nodes_df['Node']==ni]['Y'].values[0])
+        xj = float(nodes_df[nodes_df['Node']==nj]['X'].values[0])
+        yj = float(nodes_df[nodes_df['Node']==nj]['Y'].values[0])
+        fig.add_trace(go.Scatter(
+            x=[xi, xj], y=[yi, yj], mode='lines',
+            line=dict(color='#9E9E9E', width=2, dash='dash'),
+            name='Original' if not shown_orig else '',
+            showlegend=not shown_orig))
+        shown_orig = True
 
-    fig.update_layout(title=f'Deflected Shape  (Scale: {scale}×)',
+    # Deflected (red)
+    shown_defl = False
+    for _, mb in members_df.iterrows():
+        ni = int(mb['Node_I']); nj = int(mb['Node_J'])
+        xi = float(nodes_df[nodes_df['Node']==ni]['X'].values[0])
+        yi = float(nodes_df[nodes_df['Node']==ni]['Y'].values[0])
+        xj = float(nodes_df[nodes_df['Node']==nj]['X'].values[0])
+        yj = float(nodes_df[nodes_df['Node']==nj]['Y'].values[0])
+        dxi = displacements[(ni-1)*3]   * scale
+        dyi = displacements[(ni-1)*3+1] * scale
+        dxj = displacements[(nj-1)*3]   * scale
+        dyj = displacements[(nj-1)*3+1] * scale
+        fig.add_trace(go.Scatter(
+            x=[xi+dxi, xj+dxj], y=[yi+dyi, yj+dyj],
+            mode='lines',
+            line=dict(color='#C62828', width=3),
+            name='Deflected' if not shown_defl else '',
+            showlegend=not shown_defl))
+        shown_defl = True
+
+    fig.update_layout(
+        title=dict(text=f'Deflected Shape  (Scale factor: {scale}×)',
+                   font=dict(size=16)),
         xaxis_title='X (m)', yaxis_title='Y (m)',
-        hovermode='closest', height=450,
-        yaxis=dict(scaleanchor='x', scaleratio=1))
+        hovermode='closest', height=420,
+        plot_bgcolor='#FAFAFA', paper_bgcolor='white',
+        yaxis=dict(scaleanchor='x', scaleratio=1),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                    xanchor='right', x=1),
+        margin=dict(l=70, r=40, t=70, b=60))
     return fig
