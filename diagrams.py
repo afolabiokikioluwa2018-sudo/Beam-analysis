@@ -283,18 +283,20 @@ def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
         # Get loads
         member_loads = loads_df[loads_df['Member'] == member_id]
         
-        # Generate shear values
+        # Generate shear values along the member
+        # Sign convention: V_i is the upward shear force at the left end (node i)
+        # As we move from i to j, downward loads reduce the shear
         n_points = 200
         x_local = np.linspace(0, L, n_points)
         V = np.zeros(n_points)
         
         for i, x in enumerate(x_local):
-            V_x = V_i
+            V_x = V_i  # Start with end shear (upward positive at left face)
             
             for _, load in member_loads.iterrows():
                 if load['Type'] == 'UDL':
                     w = load['W1']
-                    V_x -= w * x
+                    V_x -= w * x          # downward load reduces V
                 elif load['Type'] == 'VDL':
                     w1 = load['W1']
                     w2 = load['W2']
@@ -303,7 +305,7 @@ def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
                     P = load['P']
                     a = load['a']
                     if x >= a:
-                        V_x -= P
+                        V_x -= P          # downward point load reduces V
             
             V[i] = V_x
         
@@ -332,14 +334,28 @@ def plot_sfd(members_df, nodes_df, member_forces_df, loads_df):
             showlegend=False,
             hoverinfo='skip'
         ))
+
+        # Annotate max and min shear values
+        max_idx = np.argmax(V)
+        min_idx = np.argmin(V)
+        for ann_idx in set([0, len(V)-1, max_idx, min_idx]):
+            if abs(V[ann_idx]) > 0.01:
+                fig.add_annotation(
+                    x=x_plot[ann_idx], y=V[ann_idx],
+                    text=f'{V[ann_idx]:.2f} kN',
+                    showarrow=True, arrowhead=2,
+                    bgcolor='white', bordercolor=color,
+                    font=dict(size=9)
+                )
     
     fig.update_layout(
-        title='Shear Force Diagram',
+        title='Shear Force Diagram (Positive = Upward on Left Face)',
         xaxis_title='Position (m)',
         yaxis_title='Shear Force (kN)',
         hovermode='closest',
         height=450,
-        showlegend=True
+        showlegend=True,
+        yaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='black')
     )
     
     return fig
@@ -377,18 +393,20 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
         # Get loads
         member_loads = loads_df[loads_df['Member'] == member_id]
         
-        # Generate moment values
+        # Generate moment values along the member
+        # M(x) = M_i + V_i*x - load contributions
+        # Positive moment = sagging (tension at bottom)
         n_points = 200
         x_local = np.linspace(0, L, n_points)
         M = np.zeros(n_points)
         
         for i, x in enumerate(x_local):
-            M_x = M_i + V_i * x
-            
+            M_x = M_i + V_i * x   # moment from end conditions
+
             for _, load in member_loads.iterrows():
                 if load['Type'] == 'UDL':
                     w = load['W1']
-                    M_x -= w * x**2 / 2
+                    M_x -= w * x**2 / 2          # downward UDL sagging
                 elif load['Type'] == 'VDL':
                     w1 = load['W1']
                     w2 = load['W2']
@@ -445,12 +463,16 @@ def plot_bmd(members_df, nodes_df, member_forces_df, loads_df):
             )
     
     fig.update_layout(
-        title='Bending Moment Diagram (Sagging Positive)',
+        title='Bending Moment Diagram (Sagging +ve, plotted on tension face)',
         xaxis_title='Position (m)',
         yaxis_title='Bending Moment (kNm)',
         hovermode='closest',
         height=450,
-        showlegend=True
+        showlegend=True,
+        yaxis=dict(
+            autorange='reversed',   # sagging (positive) plotted downward — tension face convention
+            zeroline=True, zerolinewidth=2, zerolinecolor='black'
+        )
     )
     
     return fig
