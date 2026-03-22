@@ -446,7 +446,7 @@ Proudly created by Okik's
 
 ## 🏆 Acknowledgments
 
-- CEG 410 Course Instructors
+- CEG 410 CGroup 8 members 
 - Afolabi Okikioluwa 
 - Streamlit Development Team
 - NumPy & SciPy Contributors
